@@ -41,9 +41,9 @@ fi
 SEP=":"
 
 DATA_FILES=(
-    "src/sarthak/data/providers.json${SEP}sarthak/data"
-    "src/sarthak/data/config.toml${SEP}sarthak/data"
-    "src/sarthak/core/ai_utils/prompts.json${SEP}sarthak/core/ai_utils"
+    "$REPO_ROOT/src/sarthak/data/providers.json${SEP}sarthak/data"
+    "$REPO_ROOT/src/sarthak/data/config.toml${SEP}sarthak/data"
+    "$REPO_ROOT/src/sarthak/core/ai_utils/prompts.json${SEP}sarthak/core/ai_utils"
 )
 
 ADD_DATA_ARGS=()

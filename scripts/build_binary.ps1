@@ -22,9 +22,9 @@ Write-Host "  > Building Sarthak binary: $AssetName"
 # ── Data files ────────────────────────────────────────────────────────────────
 $sep = ";"   # Windows separator for --add-data
 $AddData = @(
-    "src\sarthak\data\providers.json${sep}sarthak/data",
-    "src\sarthak\data\config.toml${sep}sarthak/data",
-    "src\sarthak\core\ai_utils\prompts.json${sep}sarthak/core/ai_utils"
+    "$RepoRoot\src\sarthak\data\providers.json${sep}sarthak/data",
+    "$RepoRoot\src\sarthak\data\config.toml${sep}sarthak/data",
+    "$RepoRoot\src\sarthak\core\ai_utils\prompts.json${sep}sarthak/core/ai_utils"
 )
 
 # ── Hidden imports ────────────────────────────────────────────────────────────
