@@ -112,7 +112,6 @@ artifacts = [
 
 
 [tool.uv]
-# no longer need dev-dependencies here as it moved to dependency-groups
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
