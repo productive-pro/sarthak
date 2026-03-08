@@ -81,6 +81,8 @@ dev = [
     "pymdown-extensions",
     # Binary build (replaces nuitka — simpler CI, same result)
     "pyinstaller>=6.0",
+    # Conventional commits + changelog automation
+    "commitizen>=4.0",
 ]
 
 [build-system]
@@ -115,6 +117,15 @@ artifacts = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"
+tag_format = "v$version"
+update_changelog_on_bump = true
+changelog_file = "docs/changelog.md"
+changelog_incremental = true
+major_version_zero = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

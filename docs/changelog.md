@@ -6,13 +6,10 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 
 ## Unreleased
 
-### Added
-- MkDocs + Material documentation site with GitHub Pages deployment.
-- Monokai-inspired theme styling and homepage hero layout.
-- Auto-generated API reference via mkdocstrings.
+## v0.0.1 (2026-03-09)
 
-### Changed
-- Refined documentation tone and structure for professional clarity.
+### Fix
 
-### Fixed
-- Documentation statements aligned with actual encryption and redaction behavior.
+- create release even if some binaries fail; fix repo URLs
+- use absolute paths for PyInstaller data files
+- use absolute paths for PyInstaller data files
