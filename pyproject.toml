@@ -1,0 +1,112 @@
+
+[project]
+name = "sarthak"
+version = "0.0.1"
+description = "Privacy-first self-analytics intelligence platform for Linux, macOS, and Windows"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+keywords = ["ai", "productivity", "cli", "analytics", "spaces", "learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    # Core
+    "pydantic",
+    "click",
+    "structlog",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "psutil",
+    "pywin32; platform_system == 'Windows'",
+    # Encryption
+    "cryptography",
+    # AI
+    "httpx",
+    "pydantic-ai",
+    # TUI
+    "textual",
+    "rich",
+    # MCP
+    "mcp",
+    "questionary",
+    "tomlkit",
+    "pyperclip",
+    "pytz",
+    "python-telegram-bot",
+    "croniter",
+    # Roadmap system
+    "aiosqlite",
+    "sqlite-vec",
+    "watchfiles",
+    "pydantic-ai-slim[ag-ui,duckduckgo,openrouter]",
+    "markitdown[all]",
+    "pdfminer.six",
+    "platformdirs",
+]
+
+[project.urls]
+Homepage = "https://github.com/1bharath-yadav/sarthak"
+Repository = "https://github.com/1bharath-yadav/sarthak"
+Issues = "https://github.com/1bharath-yadav/sarthak/issues"
+
+[project.optional-dependencies]
+cloud = [
+    "openai",
+    "anthropic",
+]
+
+[project.scripts]
+sarthak = "sarthak.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "zensical",
+    "mkdocstrings",
+    "mkdocstrings-python",
+    "pymdown-extensions",
+    # Binary build (replaces nuitka — simpler CI, same result)
+    "pyinstaller>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+# Include react_dist in the source tarball so wheel-from-sdist works too
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/config.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sarthak"]
+
+
+[tool.uv]
+# no longer need dev-dependencies here as it moved to dependency-groups
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

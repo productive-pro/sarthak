@@ -1,0 +1,139 @@
+# Sarthak AI — Configuration
+# Single source of truth. All services read this via src/config.py
+
+[general]
+project_name = "sarthak"
+data_dir = "~/.local/share/sarthak"
+log_level = "INFO"           # DEBUG | INFO | WARNING | ERROR
+log_format = "json"          # json | console
+
+# [database] section removed — PostgreSQL is no longer used.
+
+[encryption]
+enabled = true
+algorithm = "AES-GCM"       # do not change after first write
+
+[ai]
+# Provider priority: first available + configured is used
+default_provider = "ollama"   # ollama | openai | anthropic | groq | gemini | openrouter
+default_model = "gemma3:4b"
+
+[ai.ollama]
+base_url = "http://localhost:11434/v1"
+text_model = "gemma3:4b"
+vision_model = "qwen3-vl"
+timeout = 60
+
+[ai.openai]
+model = "gpt-4o-mini"
+base_url = ""
+timeout = 30
+
+[ai.gemini]
+model = "gemini-2.0-flash"
+timeout = 30
+
+[ai.anthropic]
+model = "claude-3-5-haiku-20241022"
+timeout = 30
+
+[ai.openrouter]
+model = "anthropic/claude-3.5-sonnet"
+timeout = 30
+app_url = "https://github.com/1bharath-yadav/sarthak"
+app_title = "Sarthak AI"
+
+[ai.grok]
+model = "grok-2"
+timeout = 30
+base_url = "https://api.x.ai/v1"
+
+[ai.huggingface]
+model = "Qwen/Qwen2.5-Coder-32B-Instruct"
+timeout = 30
+
+[ai.github-copilot]
+# GitHub Copilot provider — authenticate with: sarthak copilot login
+# Optional: set a raw Copilot token here (or use GITHUB_COPILOT_TOKEN env var)
+# token = ""    # overrides device-flow auth when set
+model = "gpt-4o"
+timeout = 30
+
+[ai.custom]
+compat = "openai"          # openai | anthropic
+base_url = ""
+model = "gpt-4o-mini"
+timeout = 30
+
+[ai.fallback]
+# Fallback model chain: if the primary model fails (4xx/5xx or empty response),
+# Sarthak tries fallback1, then fallback2. Leave blank to disable.
+fallback1_provider = "ollama"
+fallback1_model    = "gemma3:4b"
+fallback2_provider = ""
+fallback2_model    = ""
+
+[ai.classify]
+# Activity classifier
+provider = "ollama"
+model = "gemma3:4b"
+categories = [
+    "coding", "browsing", "reading", "communication",
+    "design", "debugging", "research", "admin", "idle", "unknown",
+]
+
+[ai.embeddings]
+# Embedding model for RAG indexing and search.
+# Format: "provider:model-id"
+# Free local option (recommended): ollama:nomic-embed-text  (768-dim, run: ollama pull nomic-embed-text)
+# Cloud option: openai:text-embedding-3-small  (1536-dim, requires openai api_key)
+model = "ollama:nomic-embed-text"
+# Uncomment to use a cloud provider instead:
+# model = "openai:text-embedding-3-small"
+
+[ai.cache]
+enabled = true
+cache_dir = "~/.sarthak_ai/data/cache"
+ttl_seconds = 3600            # 1 hour
+
+[tui]
+refresh_interval = 5          # seconds
+theme = "tokyo"
+max_event_rows = 200
+font = "JetBrainsMono Nerd Font"
+
+[web]
+enabled = true
+host = "127.0.0.1"
+port = 4848
+
+[mcp]
+# MCP server config — used by opencode, gemini-cli, claude-code, openclaw
+enabled = true
+transport = "stdio"
+
+[notifications]
+provider = "dunst"            # uses notify-send
+enabled = true
+# Trigger a dunst alert if no coding detected in N minutes during work hours
+idle_coding_alert_minutes = 120
+work_hours_start = "09:00"
+work_hours_end = "22:00"
+
+[telegram]
+enabled = false
+# bot_token = "ENC:..."   # encrypt with: sarthak encrypt <your-token>
+# allowed_user_id = 123456789  # your Telegram user ID (get it from @userinfobot)
+timeout_seconds = 60
+
+[whisper]
+# Speech-to-text via whisper-cli (whisper.cpp).
+# Models are stored in ~/.sarthak_ai/whisper_models/
+model     = "base.en"   # ggml-base.en.bin in models_dir; or set model_path for a custom location
+model_path = ""          # absolute path to a .bin file; overrides model when set
+device    = "CPU"        # --ov-e-device: CPU | GPU | NPU
+beam_size = 5            # --beam-size: 1 = fastest, 5 = whisper default
+threads   = 0            # -t: CPU threads (0 = whisper-cli default)
+language  = "auto"       # -l: spoken language code (en, fr, de …) or "auto"
+
+

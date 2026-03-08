@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "sarthak": {
+      "command": "/home/archer/projects/sarthak/.venv/bin/python",
+      "args": ["-m", "sarthak.mcp.server"],
+      "cwd": "/home/archer/projects/sarthak",
+      "env": {}
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgresql://archer@localhost/sarthak_oltp"],
+      "env": {}
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem",
+        "/home/archer/projects",
+        "/home/archer/.dotfiles",
+        "/home/archer/.config"
+      ],
+      "env": {}
+    },
+    "git": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-git", "--repository", "/home/archer/projects/sarthak"],
+      "env": {}
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "env": {}
+    }
+  }
+}

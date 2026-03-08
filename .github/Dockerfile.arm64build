@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+# Used by release.yml to build the Linux aarch64 binary inside an arm64 container.
+# Platform is forced to linux/arm64 by the workflow (via QEMU).
+FROM python:3.11-slim
+
+WORKDIR /build
+COPY . .
+
+RUN pip install --no-cache-dir -e ".[cloud]" pyinstaller && \
+    bash scripts/build_binary.sh && \
+    mkdir -p /out && \
+    cp dist/sarthak /out/sarthak
+

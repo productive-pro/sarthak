@@ -1,0 +1,57 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+.venv/
+dist/
+build/
+site/
+*.egg-info/
+.eggs/
+
+# ── Secrets ─────────────────────────────────────────────────────────────────
+# sensvault handles secrets — these should NEVER be committed
+*_key.pem
+*.key
+*.p12
+
+
+# ── Cache ────────────────────────────────────────────────────────────────────
+.cache/
+.cache/mkdocs/
+.cache/zensical/
+*.log
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+# Raw screenshots (never stored, but just in case)
+screenshots/
+*.png
+*.jpg
+
+# ── Editor ───────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.secrets/
+secrets.toml
+master.key
+
+
+# React build output
+src/sarthak/web/react_dist/
+
+# Static bundled files
+src/sarthak/web/static/
+
+# General frontend builds
+dist/
+build/
+node_modules/

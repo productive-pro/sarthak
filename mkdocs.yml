@@ -1,0 +1,109 @@
+site_name: Sarthak AI
+site_description: Privacy-first activity intelligence and mastery engine for any skill
+site_url: https://1bharath-yadav.github.io/sarthak/
+repo_url: https://github.com/1bharath-yadav/sarthak
+repo_name: 1bharath-yadav/sarthak
+edit_uri: edit/main/docs/
+
+nav:
+  - Home: index.md
+  - Guides:
+      - Installation: guides/installation.md
+      - Configuration: guides/configuration.md
+      - Publishing to PyPI: guides/publishing.md
+      - Docs Development: guides/development.md
+  - Features:
+      - Web UI: features/web.md
+      - Sarthak Spaces: features/spaces.md
+      - Agents: features/agents.md
+      - TUI and Analytics: features/tui.md
+      - MCP Server: features/mcp.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Privacy and Security: architecture/privacy.md
+  - Philosophy: philosophy.md
+  - Project:
+      - Release Notes: release-notes.md
+      - Changelog: changelog.md
+      - Contributing: contributing.md
+      - Not Found (404): 404.md
+  - Reference:
+      - Overview: reference/index.md
+      - CLI: reference/sarthak.cli.main.md
+      - Config: reference/sarthak.core.config.md
+      - MCP: reference/sarthak.features.mcp.server.md
+      - TUI: reference/sarthak.features.tui.app.md
+      - AI Agent: reference/sarthak.features.ai.agent.md
+      - Web: reference/sarthak.web.app.md
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  language: en
+  logo: icons/sarthak_icon.svg
+  favicon: icons/sarthak_icon.svg
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - toc.follow
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+  palette:
+    - scheme: slate
+      primary: black
+      accent: lime
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: black
+      accent: lime
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_root_heading: true
+            show_root_toc_entry: false
+            members_order: source
+            docstring_style: google
+            show_source: false
+
+markdown_extensions:
+  - attr_list
+  - md_in_html
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+      pygments_style: monokai
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/1bharath-yadav/sarthak
+
+copyright: >
+  Copyright &copy; 2026 Sarthak AI

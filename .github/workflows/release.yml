@@ -1,0 +1,257 @@
+name: Release
+
+# Triggered by: git tag v1.2.3 && git push --tags
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create GitHub Release + upload assets
+  id-token: write   # OIDC for PyPI trusted publishing
+
+jobs:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 1 — Build Python wheel + sdist
+# ─────────────────────────────────────────────────────────────────────────────
+  build-wheel:
+    name: Build wheel & sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build React frontend
+        run: bash rebuild_frontend.sh
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Checksum wheel artifacts
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS-wheel.txt
+          cat SHA256SUMS-wheel.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-wheel
+          path: dist/
+          retention-days: 7
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 2 — Build native binaries (matrix: 4 targets)
+#
+# Linux aarch64 is built natively on ubuntu-22.04-arm runner — no QEMU needed.
+# Each job uploads ONE artifact: artifact-binary-<target>
+# ─────────────────────────────────────────────────────────────────────────────
+  build-binaries:
+    name: Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-22.04
+            asset_name: sarthak-linux-x86_64
+
+          - target: linux-aarch64
+            runner: ubuntu-22.04-arm
+            asset_name: sarthak-linux-aarch64
+
+          - target: macos-x86_64
+            runner: macos-13
+            asset_name: sarthak-macos-x86_64
+
+          - target: macos-arm64
+            runner: macos-14
+            asset_name: sarthak-macos-arm64
+
+          - target: windows-x86_64
+            runner: windows-latest
+            asset_name: sarthak-windows-x86_64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build React frontend
+        shell: bash
+        run: bash rebuild_frontend.sh
+
+      - name: Install project + PyInstaller
+        shell: bash
+        run: |
+          uv pip install --system -e ".[cloud]"
+          uv pip install --system pyinstaller
+
+      - name: Build binary (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+        run: bash scripts/build_binary.sh
+
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+        run: .\scripts\build_binary.ps1
+
+      - name: Rename & checksum
+        shell: bash
+        run: |
+          mkdir -p dist
+          # build_binary.sh already names the file ASSET_NAME
+          # but if it produced "sarthak" or "sarthak.exe" rename it
+          for src in dist/sarthak dist/sarthak.exe; do
+            dst="dist/${{ matrix.asset_name }}"
+            [ -f "$src" ] && [ ! -f "$dst" ] && mv "$src" "$dst" || true
+          done
+          [ -f "dist/${{ matrix.asset_name }}" ] \
+            || { echo "ERROR: binary not found"; ls dist/; exit 1; }
+          cd dist
+          if command -v sha256sum &>/dev/null; then
+            sha256sum "${{ matrix.asset_name }}" > SHA256SUMS-${{ matrix.target }}.txt
+          else
+            shasum -a 256 "${{ matrix.asset_name }}" > SHA256SUMS-${{ matrix.target }}.txt
+          fi
+          echo "=== built artifact ==="
+          ls -lh "${{ matrix.asset_name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifact-binary-${{ matrix.target }}
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/SHA256SUMS-${{ matrix.target }}.txt
+          retention-days: 7
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 3 — Publish to PyPI
+# ─────────────────────────────────────────────────────────────────────────────
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build-wheel]
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: artifact-wheel
+          path: dist/
+
+      # Trusted publishing — no PYPI_TOKEN secret needed.
+      # One-time setup: https://pypi.org/manage/account/publishing/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 4 — Create GitHub Release with ALL assets attached
+# Waits for both wheel and all 5 binaries.
+# If a binary target fails it won't block the release — set continue-on-error
+# on build-binaries if you want that behaviour, but for now we wait for all.
+# ─────────────────────────────────────────────────────────────────────────────
+  github-release:
+    name: GitHub Release
+    needs: [build-wheel, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Download all artifacts into subdirs, then flatten into release-assets/
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "artifact-*"
+          path: all-artifacts/
+          merge-multiple: false   # keep in per-artifact subdirs
+
+      - name: Flatten artifacts + merge SHA256SUMS
+        run: |
+          mkdir -p release-assets
+          # Copy every file from every artifact subdir into release-assets/
+          find all-artifacts/ -type f | while read f; do
+            cp "$f" release-assets/ 2>/dev/null || true
+          done
+
+          # Merge all per-target SHA256SUMS-*.txt into one master SHA256SUMS.txt
+          cd release-assets
+          cat SHA256SUMS-*.txt SHA256SUMS-wheel.txt 2>/dev/null \
+            | sort -u \
+            | grep -v "^$" \
+            > SHA256SUMS.txt
+          # Clean up per-target files — only keep the master
+          rm -f SHA256SUMS-*.txt
+
+          echo "=== Release assets ==="
+          ls -lh
+          echo ""
+          echo "=== SHA256SUMS.txt ==="
+          cat SHA256SUMS.txt
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release body
+        id: body
+        run: |
+          cat > /tmp/release-body.md << 'EOF'
+          ## Install
+
+          **Linux / macOS — one line:**
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install-binary.sh | bash
+          ```
+
+          **Windows PowerShell — one line:**
+          ```powershell
+          irm https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install-binary.ps1 | iex
+          ```
+
+          **PyPI:**
+          ```bash
+          pip install sarthak
+          ```
+
+          ## Binaries
+
+          | Platform | File |
+          |---|---|
+          | Linux x86_64 | `sarthak-linux-x86_64` |
+          | Linux arm64  | `sarthak-linux-aarch64` |
+          | macOS x86_64 | `sarthak-macos-x86_64` |
+          | macOS arm64  | `sarthak-macos-arm64` |
+          | Windows x64  | `sarthak-windows-x86_64.exe` |
+
+          Verify downloads with `SHA256SUMS.txt`.
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: "Sarthak AI v${{ steps.version.outputs.VERSION }}"
+          body_path: /tmp/release-body.md
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: release-assets/*
