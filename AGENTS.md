@@ -7,7 +7,7 @@ working on the **Sarthak AI** codebase. Read it before touching any code.
 
 ## Project Overview
 
-Sarthak AI is a **privacy-first productivity intelligence platform** built in Python 3.11+.
+Sarthak AI is a **privacy-first productivity intelligence platform for effective learning and doing projects** built in Python 3.11+.
 It tracks work activity, manages adaptive learning "Spaces", and runs scheduled AI agents —
 all runnable fully offline.
 
