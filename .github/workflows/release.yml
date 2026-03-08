@@ -163,6 +163,9 @@ jobs:
           name: artifact-wheel
           path: dist/
 
+      - name: Remove non-distribution files
+        run: rm -f dist/SHA256SUMS-wheel.txt
+
       # Trusted publishing — no PYPI_TOKEN secret needed.
       # One-time setup: https://pypi.org/manage/account/publishing/
       - uses: pypa/gh-action-pypi-publish@release/v1
