@@ -90,16 +90,36 @@ _REACT_HTML = _REACT_DIST / "index.html"
 
 _HTML = _REACT_HTML
 
+_MISSING_FRONTEND_HTML = """
+<!DOCTYPE html><html><head><title>Sarthak — Frontend Not Found</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:60px auto;padding:0 20px;}
+pre{background:#f4f4f4;padding:12px;border-radius:4px;overflow-x:auto;}</style>
+</head><body>
+<h2>Frontend assets not found</h2>
+<p>The React frontend was not bundled with this installation.<br>
+Run the following to build it, then restart the server:</p>
+<pre>cd /path/to/sarthak-repo\nbash rebuild_frontend.sh\nuv pip install -e .</pre>
+<p>If you installed from PyPI and see this message, please
+<a href="https://github.com/productive-pro/sarthak/issues">open an issue</a>.</p>
+</body></html>
+"""
+
+
+def _read_spa_html() -> str:
+    if _REACT_HTML.exists():
+        return _REACT_HTML.read_text(encoding="utf-8")
+    return _MISSING_FRONTEND_HTML
+
 
 @app.get("/", response_class=HTMLResponse)
 async def spa():
-    return _HTML.read_text(encoding="utf-8")
+    return _read_spa_html()
 
 
 @app.get("/roadmap", response_class=HTMLResponse)
 async def roadmap_ui():
     # Roadmap is served by the React SPA — same index.html with hash routing
-    return _HTML.read_text(encoding="utf-8")
+    return _read_spa_html()
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -1365,7 +1385,7 @@ async def spa_fallback(full_path: str):
         candidate = (_REACT_DIST / full_path).resolve()
         if candidate.is_file() and _REACT_DIST in candidate.parents:
             return FileResponse(candidate)
-    return _HTML.read_text(encoding="utf-8")
+    return _read_spa_html()
 
 
 # ── Launch ────────────────────────────────────────────────────────────────────

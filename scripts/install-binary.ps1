@@ -4,7 +4,7 @@
 # verifies its SHA-256 checksum, and installs to %LOCALAPPDATA%\sarthak\bin\.
 #
 # Usage (PowerShell):
-#   irm https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install-binary.ps1 | iex
+#   irm https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install-binary.ps1 | iex
 #
 # Install a specific version:
 #   $env:SARTHAK_VERSION="v1.2.3"
@@ -17,7 +17,7 @@
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Repo        = "1bharath-yadav/sarthak"
+$Repo        = "productive-pro/sarthak"
 $ApiUrl      = "https://api.github.com/repos/$Repo/releases"
 $ReleasesUrl = "https://github.com/$Repo/releases"
 $AssetName   = "sarthak-windows-x86_64.exe"

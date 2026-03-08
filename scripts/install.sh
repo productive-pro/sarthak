@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-REPO="1bharath-yadav/sarthak"
+REPO="productive-pro/sarthak"
 REPO_URL="https://github.com/${REPO}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 RELEASE_TAG="${RELEASE_TAG:-}"

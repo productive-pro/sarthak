@@ -14,7 +14,7 @@
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$Repo        = "1bharath-yadav/sarthak"
+$Repo        = "productive-pro/sarthak"
 $RepoUrl     = "https://github.com/$Repo"
 $ApiUrl      = "https://api.github.com/repos/$Repo/releases"
 $AssetName   = "sarthak-windows-x86_64.exe"

@@ -1,8 +1,8 @@
 site_name: Sarthak AI
 site_description: Privacy-first activity intelligence and mastery engine for any skill
-site_url: https://1bharath-yadav.github.io/sarthak/
-repo_url: https://github.com/1bharath-yadav/sarthak
-repo_name: 1bharath-yadav/sarthak
+site_url: https://productive-pro.github.io/sarthak/
+repo_url: https://github.com/productive-pro/sarthak
+repo_name: productive-pro/sarthak
 edit_uri: edit/main/docs/
 
 nav:
@@ -103,7 +103,7 @@ extra_css:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/1bharath-yadav/sarthak
+      link: https://github.com/productive-pro/sarthak
 
 copyright: >
   Copyright &copy; 2026 Sarthak AI

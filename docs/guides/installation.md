@@ -9,7 +9,7 @@
 ## Install on Linux or macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install.sh | bash
 ```
 
 The installer sets up Sarthak, registers it as a background service, and generates your local encryption key.
@@ -19,7 +19,7 @@ The installer sets up Sarthak, registers it as a background service, and generat
 Open PowerShell and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install.ps1 | iex
 ```
 
 ## Install from PyPI

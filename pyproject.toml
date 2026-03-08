@@ -57,9 +57,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/1bharath-yadav/sarthak"
-Repository = "https://github.com/1bharath-yadav/sarthak"
-Issues = "https://github.com/1bharath-yadav/sarthak/issues"
+Homepage = "https://github.com/productive-pro/sarthak"
+Repository = "https://github.com/productive-pro/sarthak"
+Issues = "https://github.com/productive-pro/sarthak/issues"
 
 [project.optional-dependencies]
 cloud = [
@@ -96,9 +96,17 @@ include = [
     "/pyproject.toml",
     "/config.toml",
 ]
+artifacts = [
+    "src/sarthak/web/react_dist/**",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sarthak"]
+# react_dist is in .gitignore (build artifact), so we must declare it explicitly
+# to ensure it is included in the wheel when publishing to PyPI.
+artifacts = [
+    "src/sarthak/web/react_dist/**",
+]
 
 
 [tool.uv]

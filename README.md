@@ -10,9 +10,9 @@ Local. Offline-capable. Built around how experts actually work and learn.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/sarthak)](https://pypi.org/project/sarthak/)
-[![Docs](https://img.shields.io/badge/docs-mkdocs-informational)](https://1bharath-yadav.github.io/sarthak)
+[![Docs](https://img.shields.io/badge/docs-mkdocs-informational)](https://productive-pro.github.io/sarthak)
 
-[Get Started](#installation) · [Features](#features) · [Architecture](#architecture) · [Documentation](https://1bharath-yadav.github.io/sarthak)
+[Get Started](#installation) · [Features](#features) · [Architecture](#architecture) · [Documentation](https://productive-pro.github.io/sarthak)
 
 </div>
 
@@ -123,13 +123,13 @@ Users define agents in plain English. `creator.py` parses the description via LL
 ### One-line install — Linux / macOS
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install.sh | bash
 ```
 
 ### One-line install — Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install.ps1 | iex
 ```
 
 The installer sets up Sarthak, registers it as a background service (systemd / launchd / Task Scheduler), and generates your local encryption key.
@@ -150,7 +150,7 @@ uv tool install sarthak
 ### Install from source
 
 ```bash
-git clone https://github.com/1bharath-yadav/sarthak
+git clone https://github.com/productive-pro/sarthak
 cd sarthak
 uv sync
 uv run sarthak --help
@@ -305,7 +305,7 @@ Paste the `ENC:...` value into `config.toml` or the Config page.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone and install dependencies
-git clone https://github.com/1bharath-yadav/sarthak
+git clone https://github.com/productive-pro/sarthak
 cd sarthak
 uv sync
 ```
@@ -412,7 +412,7 @@ uv run ruff format src/
 
 **Before contributing code**, read [`AGENTS.md`](AGENTS.md) — it is the authoritative guide to the codebase architecture, conventions, and how to add new capabilities correctly.
 
-For bugs and feature requests, open an issue at [github.com/1bharath-yadav/sarthak/issues](https://github.com/1bharath-yadav/sarthak/issues).
+For bugs and feature requests, open an issue at [github.com/productive-pro/sarthak/issues](https://github.com/productive-pro/sarthak/issues).
 
 ---
 

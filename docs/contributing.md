@@ -13,7 +13,7 @@ Thanks for helping improve Sarthak AI. This guide keeps contributions consistent
 
 ```bash
 uv sync
-curl -fsSL https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install.sh | bash
 ```
 
 ## Running tests

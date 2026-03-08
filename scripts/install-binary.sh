@@ -5,7 +5,7 @@
 # verifies its SHA-256 checksum, and installs to ~/.local/bin/sarthak.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install-binary.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install-binary.sh | bash
 #
 # Install a specific version:
 #   SARTHAK_VERSION=v1.2.3 curl -fsSL ... | bash
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-REPO="1bharath-yadav/sarthak"
+REPO="productive-pro/sarthak"
 RELEASES_URL="https://github.com/${REPO}/releases"
 API_URL="https://api.github.com/repos/${REPO}/releases"
 

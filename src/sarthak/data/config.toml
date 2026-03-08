@@ -40,7 +40,7 @@ timeout = 30
 [ai.openrouter]
 model = "anthropic/claude-3.5-sonnet"
 timeout = 30
-app_url = "https://github.com/1bharath-yadav/sarthak"
+app_url = "https://github.com/productive-pro/sarthak"
 app_title = "Sarthak AI"
 
 [ai.grok]

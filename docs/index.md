@@ -33,7 +33,7 @@ All of this data stays on your machine. Nothing is sent anywhere.
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install.sh | bash
 
 # Set up your AI provider
 sarthak configure
