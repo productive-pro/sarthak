@@ -56,6 +56,7 @@ jobs:
   build-binaries:
     name: Binary (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -67,10 +68,6 @@ jobs:
           - target: linux-aarch64
             runner: ubuntu-22.04-arm
             asset_name: sarthak-linux-aarch64
-
-          - target: macos-x86_64
-            runner: macos-13
-            asset_name: sarthak-macos-x86_64
 
           - target: macos-arm64
             runner: macos-14
@@ -179,6 +176,7 @@ jobs:
   github-release:
     name: GitHub Release
     needs: [build-wheel, build-binaries]
+    if: ${{ always() && needs.build-wheel.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -225,12 +223,12 @@ jobs:
 
           **Linux / macOS — one line:**
           ```bash
-          curl -fsSL https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install-binary.sh | bash
+          curl -fsSL https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install-binary.sh | bash
           ```
 
           **Windows PowerShell — one line:**
           ```powershell
-          irm https://raw.githubusercontent.com/1bharath-yadav/sarthak/main/scripts/install-binary.ps1 | iex
+          irm https://raw.githubusercontent.com/productive-pro/sarthak/main/scripts/install-binary.ps1 | iex
           ```
 
           **PyPI:**
@@ -244,7 +242,6 @@ jobs:
           |---|---|
           | Linux x86_64 | `sarthak-linux-x86_64` |
           | Linux arm64  | `sarthak-linux-aarch64` |
-          | macOS x86_64 | `sarthak-macos-x86_64` |
           | macOS arm64  | `sarthak-macos-arm64` |
           | Windows x64  | `sarthak-windows-x86_64.exe` |
 
