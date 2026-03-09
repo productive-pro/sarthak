@@ -80,9 +80,9 @@ dev = [
     "mkdocstrings-python",
     "pymdown-extensions",
     # Binary build (replaces nuitka — simpler CI, same result)
-    "pyinstaller>=6.0",
+    "pyinstaller",
     # Conventional commits + changelog automation
-    "commitizen>=4.0",
+    "commitizen",
 ]
 
 [build-system]
