@@ -12,24 +12,13 @@ def spaces() -> None:
     """Sarthak Spaces — mastery engine. Learn any skill like an expert."""
 
 
-async def _generate_and_save_roadmap(ws_dir, profile, background: str) -> None:
-    """Generate roadmap via pydantic-ai Agent and persist to .spaces/sarthak.db."""
-    from sarthak.agents.roadmap_agents import generate_roadmap
-    from sarthak.spaces.roadmap.db import RoadmapDB
-
-    roadmap = await generate_roadmap(
-        space_name=profile.domain,
-        domain=profile.domain,
-        background=background or profile.learner.background,
-        goal=profile.learner.goal,
-    )
-    db = RoadmapDB(ws_dir)
-    await db.init()
-    await db.save_roadmap(roadmap)
-    chapters = len(roadmap.chapters)
-    concepts = sum(len(c.title) > 0 for ch in roadmap.chapters for tp in ch.topics for c in tp.concepts)
-    click.echo(f"  Roadmap   : {chapters} chapters, {concepts} concepts saved to .spaces/sarthak.db")
-    click.echo(f"  View at   : http://localhost:8000/roadmap?space={profile.domain}")
+async def _generate_and_save_roadmap(ws_dir, profile, background: str = "") -> None:
+    """Generate roadmap and persist to .spaces/sarthak.db (delegates to ensure_roadmap)."""
+    from sarthak.spaces.roadmap_init import ensure_roadmap
+    generated = await ensure_roadmap(ws_dir, profile)
+    if generated:
+        click.echo(f"  Roadmap   : generated and saved to .spaces/sarthak.db")
+        click.echo(f"  View at   : http://localhost:8000/roadmap?space={profile.domain}")
 
 
 @spaces.command("init")
@@ -38,11 +27,12 @@ async def _generate_and_save_roadmap(ws_dir, profile, background: str) -> None:
               type=click.Choice(["data_science", "ai_engineering", "medicine", "education",
                                  "exam_prep", "business", "research", "custom"]),
               help="Type of space")
-@click.option("--background", default="", help="Your background, e.g. 'doctor with no coding experience'")
+@click.option("--background", default="", help="Your background")
+@click.option("--goal", default="", help="Your learning goal")
 @click.option("--name", default="", help="Your name (for personalization)")
 @click.option("--no-roadmap", is_flag=True, default=False, help="Skip AI roadmap generation")
 def spaces_init(
-    directory: str, space_type: str, background: str, name: str, no_roadmap: bool
+    directory: str, space_type: str, background: str, goal: str, name: str, no_roadmap: bool
 ) -> None:
     """Initialize a Sarthak Space for mastery learning."""
     import asyncio
@@ -53,19 +43,48 @@ def spaces_init(
 
     ws_dir = Path(directory).resolve()
     st = SpaceType(space_type)
-    domain_label = st.value.replace("_", " ").title()
 
+    # For CUSTOM spaces: run domain discovery so we get the right domain + tools
+    domain_name = ""
+    recommended_tools = None
+    discovery: dict = {}
+    if st == SpaceType.CUSTOM and (background or goal):
+        async def _discover():
+            from sarthak.spaces.roadmap_init import discover_custom_domain
+            return await discover_custom_domain(background=background, goal=goal)
+        discovery = asyncio.run(_discover())
+        domain_name = discovery.get("domain_name", "")
+        goal = discovery.get("suggested_goal", goal)
+        if discovery.get("clarifying_questions"):
+            click.echo("\nTo refine your roadmap, consider these questions:")
+            for q in discovery["clarifying_questions"]:
+                click.echo(f"  • {q}")
+        from sarthak.spaces.models import ToolRecommendation
+        recommended_tools = [
+            ToolRecommendation(name=t["name"], purpose=t.get("purpose", ""), install_linux=t.get("install", ""))
+            for t in discovery.get("recommended_tools", []) if t.get("name")
+        ]
+
+    domain_label = domain_name or st.value.replace("_", " ").title()
     if not load_space(ws_dir):
         init_space(
             ws_dir,
             name=name or domain_label,
             description=f"Sarthak Space: {domain_label}",
-            goal=f"Mastery in {domain_label}",
+            goal=goal or f"Mastery in {domain_label}",
         )
 
-    profile = init_space_profile(ws_dir, st, background=background, learner_name=name)
+    profile = init_space_profile(
+        ws_dir, st,
+        background=background,
+        learner_name=name,
+        goal=goal,
+        domain_name=domain_name,
+        recommended_tools=recommended_tools,
+    )
+    extra_dirs = discovery.get("workspace_folders", []) if st == SpaceType.CUSTOM and (background or goal) else []
     transformer = WorkspaceTransformer(ws_dir)
-    created = transformer.transform(st)
+    created = transformer.transform(st, extra_dirs=extra_dirs)
 
     click.echo(f"✓ Sarthak Space initialized: {profile.domain}")
     click.echo(f"  Directory : {ws_dir}")
@@ -73,7 +92,7 @@ def spaces_init(
 
     if not no_roadmap:
         click.echo("  Generating AI roadmap… (this may take ~15s)")
-        asyncio.run(_generate_and_save_roadmap(ws_dir, profile, background))
+        asyncio.run(_generate_and_save_roadmap(ws_dir, profile))
 
     click.echo(f"\nNext: sarthak spaces session --dir {directory}")
 
@@ -206,6 +225,49 @@ def spaces_profile(directory: str, background: str, goal: str, name: str) -> Non
     orch.update_learner(**kwargs)
     click.echo("Profile updated.")
     click.echo(orch.get_status())
+
+
+@spaces.command("refine")
+@click.option("--dir", "directory", default=".", help="Workspace directory")
+@click.option("--answers", default="", help="Your answers to the clarifying questions (inline)")
+def spaces_refine(directory: str, answers: str) -> None:
+    """Answer the space's clarifying questions to refine and regenerate the roadmap.
+
+    Run after `sarthak spaces init` when you see clarifying questions printed.
+    Paste your answers inline with --answers or interactively via stdin.
+
+    Example:
+      sarthak spaces refine --dir . --answers "I am a complete beginner, focusing on practical application"
+    """
+    import asyncio
+    from pathlib import Path
+    from sarthak.spaces.roadmap_init import refine_roadmap
+    from sarthak.spaces.store import load_profile
+
+    ws_dir = Path(directory).resolve()
+    profile = load_profile(ws_dir)
+    if profile is None:
+        click.echo("Error: No space found. Run: sarthak spaces init", err=True)
+        return
+
+    if not answers:
+        click.echo("Answer the clarifying questions below (Ctrl+D when done):")
+        answers = click.get_text_stream("stdin").read()
+
+    if not answers.strip():
+        click.echo("No answers provided — roadmap unchanged.")
+        return
+
+    click.echo("Regenerating roadmap with your answers… (this may take ~20s)")
+
+    async def _run():
+        return await refine_roadmap(ws_dir, profile, answers)
+
+    ok = asyncio.run(_run())
+    if ok:
+        click.echo("✓ Roadmap refined and saved to .spaces/sarthak.db and .spaces/roadmap.json")
+    else:
+        click.echo("Roadmap regeneration failed — check logs for details.", err=True)
 
 
 @spaces.command("list")

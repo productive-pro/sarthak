@@ -197,3 +197,10 @@ async def delete_tip(tip_id: int) -> None:
     async with connect() as db:
         await db.execute("DELETE FROM saved_tips WHERE id=?", (tip_id,))
         await db.commit()
+
+
+async def delete_chat_session(session_id: str) -> None:
+    """Delete all messages in a chat session."""
+    async with connect() as db:
+        await db.execute("DELETE FROM chat_history WHERE session_id=?", (session_id,))
+        await db.commit()

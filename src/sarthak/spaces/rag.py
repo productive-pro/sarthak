@@ -27,7 +27,6 @@ import asyncio
 import json
 import os
 import re
-import struct
 import threading
 import time
 from pathlib import Path
@@ -45,7 +44,7 @@ _ALL_EXTS = {
     ".txt", ".md", ".rst", ".py", ".js", ".ts", ".json", ".toml", ".yaml",
     ".yml", ".csv", ".xml", ".sh", ".r", ".ipynb", ".tex",
 }
-_SKIP_DIRS = {".sarthak_rag", ".git", "__pycache__", "node_modules", ".venv"}
+_SKIP_DIRS = {".sarthak_rag", ".spaces", ".git", "__pycache__", "node_modules", ".venv"}
 _PLAINTEXT_EXTS = {
     ".txt", ".md", ".rst", ".py", ".js", ".ts", ".toml", ".yaml",
     ".yml", ".sh", ".r", ".tex", ".xml", ".json", ".csv", ".ipynb",
@@ -64,48 +63,50 @@ _TOP_K         = 5
 _MTIME_FILE    = "mtimes.json"
 _DB_FILE       = "sarthak.vec"
 _DEBOUNCE_S    = 1.0
-
-_SCHEMA = """
-PRAGMA journal_mode=WAL;
-PRAGMA synchronous=NORMAL;
-
-CREATE TABLE IF NOT EXISTS chunks (
-    id      TEXT PRIMARY KEY,
-    source  TEXT NOT NULL,
-    chunk   INTEGER NOT NULL,
-    line    INTEGER NOT NULL,
-    text    TEXT NOT NULL
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-    id UNINDEXED,
-    text,
-    source UNINDEXED,
-    content=chunks,
-    content_rowid=rowid
-);
-"""
+# NOTE: DB schema is now owned by storage/sql/vector/schema_sqlite_vec.sql
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 def _rag_dir(directory: Path) -> Path:
-    d = directory / ".sarthak_rag"
-    d.mkdir(exist_ok=True)
+    """RAG data lives inside .spaces/rag/ — all space data in one place."""
+    d = directory / ".spaces" / "rag"
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 def _db_path(directory: Path) -> Path:
     return _rag_dir(directory) / _DB_FILE
 
 def _legacy_db_path(directory: Path) -> Path:
-    return directory / ".spaces" / _DB_FILE
+    """Migrate from old .sarthak_rag/ location."""
+    return directory / ".sarthak_rag" / _DB_FILE
 
 def _mtime_path(directory: Path) -> Path:
     return _rag_dir(directory) / _MTIME_FILE
 
 def _legacy_mtime_path(directory: Path) -> Path:
-    return directory / ".spaces" / _MTIME_FILE
+    """Migrate from old .sarthak_rag/ location."""
+    return directory / ".sarthak_rag" / _MTIME_FILE
+
+def _migrate_legacy_rag(directory: Path) -> None:
+    """One-time migration: move .sarthak_rag/ into .spaces/rag/ if it exists."""
+    old = directory / ".sarthak_rag"
+    if not old.exists():
+        return
+    new = _rag_dir(directory)
+    for old_file in old.iterdir():
+        new_file = new / old_file.name
+        if not new_file.exists():
+            try:
+                old_file.rename(new_file)
+            except Exception:
+                pass
+    try:
+        old.rmdir()  # only removes if empty
+    except Exception:
+        pass
 
 def _load_mtimes(directory: Path) -> dict[str, float]:
+    _migrate_legacy_rag(directory)
     for p in (_mtime_path(directory), _legacy_mtime_path(directory)):
         if p.exists():
             try:
@@ -116,9 +117,6 @@ def _load_mtimes(directory: Path) -> dict[str, float]:
 
 def _save_mtimes(directory: Path, mtimes: dict[str, float]) -> None:
     _mtime_path(directory).write_text(json.dumps(mtimes, indent=2), encoding="utf-8")
-
-def _encode(vec: list[float]) -> bytes:
-    return struct.pack(f"{len(vec)}f", *vec)
 
 def _char_to_line(text: str, char_pos: int) -> int:
     return text.count("\n", 0, char_pos) + 1
@@ -400,6 +398,8 @@ def _iter_files(directory: Path, pipeline: str = "text"):
 
 # ── Embedder ───────────────────────────────────────────────────────────────────
 
+_EMBEDDER = None
+
 def _get_embedder():
     """
     Build embedder from config.
@@ -412,6 +412,10 @@ def _get_embedder():
 
     Falls back to ollama:nomic-embed-text if nothing configured.
     """
+    global _EMBEDDER
+    if _EMBEDDER is not None:
+        return _EMBEDDER
+
     from sarthak.core.ai_utils.multi_provider import (
         ENV_KEYS,
         ConfigurationError,
@@ -443,12 +447,14 @@ def _get_embedder():
     else:
         # Default: ollama nomic-embed-text (free, local, 768-dim)
         log.info("rag_embedder_default", model="ollama:nomic-embed-text")
-        return _OllamaEmbedder("nomic-embed-text")
+        _EMBEDDER = _OllamaEmbedder("nomic-embed-text")
+        return _EMBEDDER
 
     log.info("rag_embedder", model=model_str)
 
     if provider == "ollama":
-        return _OllamaEmbedder(model_str.split(":", 1)[1])
+        _EMBEDDER = _OllamaEmbedder(model_str.split(":", 1)[1])
+        return _EMBEDDER
 
     try:
         p = Provider.from_str(provider)
@@ -466,7 +472,8 @@ def _get_embedder():
         )
 
     from pydantic_ai.models import EmbeddingModel
-    return EmbeddingModel(model_str)
+    _EMBEDDER = EmbeddingModel(model_str)
+    return _EMBEDDER
 
 
 class _OllamaEmbedResult:
@@ -514,62 +521,39 @@ class _OllamaEmbedder:
         return _OllamaEmbedResult(await self._embed([query]))
 
 
-# ── sqlite-vec DB ──────────────────────────────────────────────────────────────
+# ── Storage backend bridge ────────────────────────────────────────────────────
+# All DB I/O now goes through the factory-managed EmbeddingRepository.
+# _open_db / _upsert_chunks / _fts5_search are replaced by repo calls.
+# The _encode helper and _reciprocal_rank_fusion logic remain here since
+# they are pure computation (no DB I/O).
 
-def _open_db(directory: Path):
-    import sqlite3
-    import sqlite_vec
-
-    db = sqlite3.connect(str(_db_path(directory)), check_same_thread=False)
-    db.enable_load_extension(True)
-    sqlite_vec.load(db)
-    db.enable_load_extension(False)
-    db.executescript(_SCHEMA)
-    db.commit()
-    return db
+async def _get_repo(directory: Path):
+    """Return the EmbeddingRepository for this space."""
+    from sarthak.storage.factory import get_embedding_repo
+    return await get_embedding_repo(str(directory))
 
 
-def _ensure_vec_table(db, dim: int) -> None:
-    existing = db.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
-    ).fetchone()
-    if not existing:
-        db.execute(
-            f"CREATE VIRTUAL TABLE vec_chunks USING vec0(id TEXT PRIMARY KEY, embedding float[{dim}])"
-        )
-        db.commit()
+async def _upsert_chunks_via_repo(directory: Path, chunks: list[dict], embeddings: list[list[float]]) -> None:
+    repo = await _get_repo(directory)
+    await repo.upsert(chunks, embeddings)
 
 
-def _upsert_chunks(db, chunks: list[dict], embeddings: list[list[float]]) -> None:
-    """Insert/replace chunks into both relational and vector tables, sync FTS5."""
-    for chunk, emb in zip(chunks, embeddings):
-        db.execute(
-            "INSERT OR REPLACE INTO chunks(id, source, chunk, line, text) VALUES(?,?,?,?,?)",
-            (chunk["id"], chunk["source"], chunk["chunk"], chunk["line"], chunk["text"]),
-        )
-        db.execute(
-            "INSERT OR REPLACE INTO vec_chunks(id, embedding) VALUES(?,?)",
-            (chunk["id"], _encode(emb)),
-        )
-    # Rebuild FTS5 index for the rows we just wrote
-    db.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
-    db.commit()
+async def _delete_source_via_repo(directory: Path, source: str) -> None:
+    repo = await _get_repo(directory)
+    await repo.delete_source(source)
+
+
+async def _vector_search_via_repo(directory: Path, query_vec: list[float], top_k: int) -> list[dict]:
+    repo = await _get_repo(directory)
+    return await repo.search(query_vec, top_k=top_k)
+
+
+async def _fts_search_via_repo(directory: Path, query: str, top_k: int) -> list[tuple[str, float]]:
+    repo = await _get_repo(directory)
+    return await repo.fts_search(query, top_k=top_k)
 
 
 # ── Hybrid search (vector + FTS5 RRF) ─────────────────────────────────────────
-
-def _fts5_search(db, query: str, top_k: int) -> list[tuple[str, float]]:
-    """BM25 full-text search via FTS5. Returns [(id, rank)] sorted best-first."""
-    try:
-        # fts5 rank is negative BM25 (lower = better match); negate for RRF
-        rows = db.execute(
-            "SELECT id, rank FROM chunks_fts WHERE text MATCH ? ORDER BY rank LIMIT ?",
-            (query, top_k * 2),
-        ).fetchall()
-        return [(row[0], -row[1]) for row in rows]  # positive = better
-    except Exception:
-        return []
-
 
 def _reciprocal_rank_fusion(
     vec_hits: list[str],
@@ -599,7 +583,7 @@ async def index_space(directory: Path, incremental: bool = True) -> int:
         mtime = path.stat().st_mtime
         if incremental and stored_mtimes.get(rel) == mtime:
             continue
-        all_chunks.extend(_chunk(text, rel))
+        all_chunks.extend(await asyncio.to_thread(_chunk, text, rel))
         new_mtimes[rel] = mtime
 
     if not all_chunks:
@@ -608,13 +592,7 @@ async def index_space(directory: Path, incremental: bool = True) -> int:
 
     embedder = _get_embedder()
     result = await embedder.embed_documents([c["text"] for c in all_chunks])
-    embeddings = result.embeddings
-    dim = len(embeddings[0])
-
-    db = _open_db(directory)
-    _ensure_vec_table(db, dim)
-    _upsert_chunks(db, all_chunks, embeddings)
-    db.close()
+    await _upsert_chunks_via_repo(directory, all_chunks, result.embeddings)
 
     _save_mtimes(directory, new_mtimes)
     log.info("rag_indexed", directory=str(directory), chunks=len(all_chunks))
@@ -638,7 +616,7 @@ async def index_paths(directory: Path, rel_paths: list[str], pipeline: str = "te
             continue
         text = _extract_text(p, pipeline=pipeline)
         if text:
-            all_chunks.extend(_chunk(text, rel))
+            all_chunks.extend(await asyncio.to_thread(_chunk, text, rel))
             new_mtimes[rel] = p.stat().st_mtime
 
     if not all_chunks:
@@ -646,13 +624,7 @@ async def index_paths(directory: Path, rel_paths: list[str], pipeline: str = "te
 
     embedder = _get_embedder()
     result = await embedder.embed_documents([c["text"] for c in all_chunks])
-    embeddings = result.embeddings
-    dim = len(embeddings[0])
-
-    db = _open_db(directory)
-    _ensure_vec_table(db, dim)
-    _upsert_chunks(db, all_chunks, embeddings)
-    db.close()
+    await _upsert_chunks_via_repo(directory, all_chunks, result.embeddings)
 
     _save_mtimes(directory, new_mtimes)
     log.info("rag_index_paths", directory=str(directory), paths=len(rel_paths), chunks=len(all_chunks))
@@ -680,7 +652,7 @@ async def index_paths_streaming(
         text = _extract_text(p, pipeline=pipeline)
         file_chunks = []
         if text:
-            file_chunks = _chunk(text, rel)
+            file_chunks = await asyncio.to_thread(_chunk, text, rel)
             new_mtimes[rel] = p.stat().st_mtime
         all_chunks.extend(file_chunks)
         yield f"data: {json.dumps({'done': False, 'file': rel, 'file_index': idx + 1, 'total_files': total, 'chunks_so_far': len(all_chunks)})}\n\n"
@@ -691,13 +663,7 @@ async def index_paths_streaming(
 
     embedder = _get_embedder()
     result = await embedder.embed_documents([c["text"] for c in all_chunks])
-    embeddings = result.embeddings
-    dim = len(embeddings[0])
-
-    db = _open_db(directory)
-    _ensure_vec_table(db, dim)
-    _upsert_chunks(db, all_chunks, embeddings)
-    db.close()
+    await _upsert_chunks_via_repo(directory, all_chunks, result.embeddings)
     _save_mtimes(directory, new_mtimes)
 
     st = rag_status(directory)
@@ -728,72 +694,46 @@ class SearchResult:
 async def _vec_search(directory: Path, query: str, top_k: int) -> list[SearchResult]:
     """
     Hybrid search: vector cosine + FTS5 BM25 merged via Reciprocal Rank Fusion.
-    Falls back to vector-only if FTS5 returns nothing.
+    Delegates all DB I/O to the EmbeddingRepository from the factory.
+    Falls back to vector-only if FTS search returns nothing.
     """
-    db_file = _db_path(directory)
-    if not db_file.exists():
-        # Check legacy location
-        legacy = _legacy_db_path(directory)
-        if not legacy.exists():
-            return []
-
     embedder = _get_embedder()
     q_result = await embedder.embed_query(query)
-    q_vec = q_result.embeddings[0]
+    q_vec    = q_result.embeddings[0]
 
-    db = _open_db(directory)
-    try:
-        # Vector search — get top_k * 2 candidates for RRF
-        vec_rows = db.execute(
-            """
-            SELECT c.id, c.source, c.line, c.chunk, c.text, v.distance
-            FROM   vec_chunks v
-            JOIN   chunks c ON c.id = v.id
-            ORDER  BY vec_distance_cosine(embedding, ?)
-            LIMIT  ?
-            """,
-            (_encode(q_vec), top_k * 2),
-        ).fetchall()
+    # Run vector search and FTS search concurrently
+    vec_hits_raw, fts_hits = await asyncio.gather(
+        _vector_search_via_repo(directory, q_vec, top_k * 2),
+        _fts_search_via_repo(directory, query, top_k),
+    )
 
-        vec_ids = [r[0] for r in vec_rows]
-        vec_meta = {r[0]: r for r in vec_rows}
+    if not vec_hits_raw and not fts_hits:
+        return []
 
-        # FTS5 keyword search
-        fts_hits = _fts5_search(db, query, top_k)
+    vec_ids  = [r["id"] for r in vec_hits_raw]
+    vec_meta = {r["id"]: r for r in vec_hits_raw}
 
-        # Merge via RRF
-        merged_ids = _reciprocal_rank_fusion(vec_ids, fts_hits)[:top_k]
+    # RRF merge
+    merged_ids = _reciprocal_rank_fusion(vec_ids, fts_hits)[:top_k]
 
-        # Fetch rows not already in vec_meta (FTS-only hits)
-        fts_only_ids = [cid for cid in merged_ids if cid not in vec_meta]
-        if fts_only_ids:
-            placeholders = ",".join("?" * len(fts_only_ids))
-            extra = db.execute(
-                f"SELECT id, source, line, chunk, text, 0.5 FROM chunks WHERE id IN ({placeholders})",
-                fts_only_ids,
-            ).fetchall()
-            for row in extra:
-                vec_meta[row[0]] = row
-
-        return [
-            SearchResult(
-                source=vec_meta[cid][1],
-                line=vec_meta[cid][2],
-                chunk=vec_meta[cid][3],
-                text=vec_meta[cid][4],
-                distance=vec_meta[cid][5],
-            )
-            for cid in merged_ids
-            if cid in vec_meta
-        ]
-    finally:
-        db.close()
+    return [
+        SearchResult(
+            source   = vec_meta[cid]["source"],
+            line     = vec_meta[cid]["line"],
+            chunk    = vec_meta[cid]["chunk"],
+            text     = vec_meta[cid]["text"],
+            distance = vec_meta[cid]["distance"],
+        )
+        for cid in merged_ids
+        if cid in vec_meta
+    ]
 
 
 async def search_space(directory: Path, query: str, top_k: int = _TOP_K) -> str:
     """Search the RAG index. Returns Markdown with [file:line] refs, or an error string."""
     directory = Path(directory)
-    if not _db_path(directory).exists():
+    # Check both current and legacy DB locations before giving up
+    if not _db_path(directory).exists() and not _legacy_db_path(directory).exists():
         return "Space not indexed yet. Run: sarthak spaces rag index"
     results = await _vec_search(directory, query, top_k)
     if not results:
@@ -906,33 +846,75 @@ def rag_tool_for(directory: Path):
 
 
 def rag_status(directory: Path) -> dict[str, Any]:
-    """Return status dict for the RAG index."""
+    """
+    Return status dict for the RAG index.
+    Uses sqlite_vec file-stat for sync contexts; full repo.status() available
+    via the async rag_status_async() variant for FastAPI endpoints.
+    """
     directory = Path(directory)
     db_file = _db_path(directory)
     if not db_file.exists():
         legacy = _legacy_db_path(directory)
         if legacy.exists():
             db_file = legacy
+
+    mtimes = _load_mtimes(directory)
+
+    # Sync fallback: sqlite_vec file stat (always safe, no event loop needed)
     if not db_file.exists():
         return {
             "enabled":        False,
             "indexed_chunks": 0,
-            "indexed_files":  0,
+            "indexed_files":  len(mtimes),
             "db_path":        str(db_file),
             "db_size_kb":     0,
         }
-    db = _open_db(directory)
-    n        = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    distinct = db.execute("SELECT COUNT(DISTINCT source) FROM chunks").fetchone()[0]
-    db.close()
+    try:
+        from sarthak.storage.vector.sqlite_vec import SqliteVecRepo
+        repo = SqliteVecRepo(directory)
+        st = repo.status()
+        return {
+            "enabled":        st.get("enabled", True),
+            "indexed_chunks": st.get("indexed_chunks", 0),
+            "indexed_files":  len(mtimes) or st.get("indexed_files", 0),
+            "db_path":        str(db_file),
+            "db_size_kb":     st.get("db_size_kb", 0),
+            "backend":        "sqlite_vec",
+        }
+    except Exception:
+        return {
+            "enabled":        True,
+            "indexed_chunks": 0,
+            "indexed_files":  len(mtimes),
+            "db_path":        str(db_file),
+            "db_size_kb":     db_file.stat().st_size // 1024 if db_file.exists() else 0,
+        }
+
+
+async def rag_status_async(directory: Path) -> dict[str, Any]:
+    """
+    Async variant of rag_status — honours the configured vector_backend.
+    Use this from FastAPI endpoints; use rag_status() from sync/CLI contexts.
+    """
+    directory = Path(directory)
+    db_file = _db_path(directory)
     mtimes = _load_mtimes(directory)
-    return {
-        "enabled":        True,
-        "indexed_chunks": n,
-        "indexed_files":  len(mtimes) or distinct,
-        "db_path":        str(db_file),
-        "db_size_kb":     db_file.stat().st_size // 1024,
-    }
+
+    try:
+        from sarthak.storage.factory import get_embedding_repo
+        repo = await get_embedding_repo(str(directory))
+        st = repo.status()
+        db_file_actual = _legacy_db_path(directory) if not db_file.exists() and _legacy_db_path(directory).exists() else db_file
+        return {
+            "enabled":        st.get("enabled", True),
+            "indexed_chunks": st.get("indexed_chunks", 0),
+            "indexed_files":  len(mtimes),
+            "db_path":        str(db_file_actual),
+            "db_size_kb":     st.get("db_size_kb", db_file_actual.stat().st_size // 1024 if db_file_actual.exists() else 0),
+            "backend":        st.get("backend", "sqlite_vec"),
+        }
+    except Exception:
+        return rag_status(directory)
 
 
 # ── Watchdog auto-indexer ──────────────────────────────────────────────────────
@@ -956,13 +938,7 @@ def start_watcher(directory: Path):
             if time.monotonic() - _last_seen.get(rel, 0) < _DEBOUNCE_S:
                 return
         try:
-            # Use a fresh loop to avoid RuntimeError when called from a thread
-            # that shares a process with a running event loop (e.g. uvicorn).
-            loop = asyncio.new_event_loop()
-            try:
-                n = loop.run_until_complete(index_space(directory, incremental=True))
-            finally:
-                loop.close()
+            n = asyncio.run(index_space(directory, incremental=True))
             log.info("rag_auto_reindexed", file=rel, chunks=n)
         except Exception as exc:
             log.warning("rag_auto_reindex_failed", file=rel, error=str(exc))

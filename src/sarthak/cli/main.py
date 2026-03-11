@@ -12,6 +12,7 @@ import click
 from sarthak.cli.spaces_cli import spaces
 from sarthak.cli.agents_cli import agents
 from sarthak.cli import analytics_cli
+from sarthak.cli.storage_cli import storage_cli
 
 
 @click.group()
@@ -28,6 +29,7 @@ def main(ctx: click.Context):
 # ── Sub-groups ────────────────────────────────────────────────────────────────
 main.add_command(spaces)
 main.add_command(agents)
+main.add_command(storage_cli)
 
 main.add_command(analytics_cli.resume)
 
@@ -647,35 +649,65 @@ def _install_task_scheduler(sarthak_exe: str, install_dir) -> None:
 
     Environment variables are injected via a small wrapper .bat file because
     schtasks /Create does not support per-task environment variables directly.
+
+    Rules:
+    - Write the .bat with cp1252 (Windows ANSI) so cmd.exe can read it.
+    - Use shell=False with a full schtasks command string built via subprocess
+      list form to avoid shell quoting issues with spaces in paths.
+    - Always /F (force overwrite) at the end of /Create, not in the middle.
     """
     import os
     import subprocess
     from pathlib import Path
 
     install_dir = Path(install_dir)
+    config_path = install_dir / "config.toml"
     wrapper = install_dir / "run_orchestrator.bat"
-    wrapper.write_text(
-        f"@echo off\n"
-        f"set SARTHAK_CONFIG={install_dir / 'config.toml'}\n"
-        f"set SARTHAK_ORCHESTRATOR_SKIP_CAPTURE=1\n"
-        f'"{sarthak_exe}" orchestrator\n',
-        encoding="utf-8",
+
+    # Write .bat in Windows ANSI (cp1252) — cmd.exe cannot read UTF-8 without BOM
+    bat_content = (
+        "@echo off\r\n"
+        f"set SARTHAK_CONFIG={config_path}\r\n"
+        "set SARTHAK_ORCHESTRATOR_SKIP_CAPTURE=1\r\n"
+        f'"{sarthak_exe}" orchestrator\r\n'
     )
+    wrapper.write_bytes(bat_content.encode("cp1252", errors="replace"))
 
     task_name = "SarthakOrchestrator"
+    wrapper_str = str(wrapper)
+
+    # Delete any existing task first (ignore errors — task may not exist)
     subprocess.run(
         ["schtasks", "/Delete", "/TN", task_name, "/F"],
-        stderr=subprocess.DEVNULL, shell=True,
+        stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        shell=False,  # Never use shell=True with schtasks — it swallows exit codes
     )
-    subprocess.run([
-        "schtasks", "/Create",
-        "/TN", task_name,
-        "/TR", f'"{wrapper}"',
-        "/SC", "ONLOGON",
-        "/RL", "LIMITED",
-        "/F",
-    ], shell=True, check=False)
-    subprocess.run(["schtasks", "/Run", "/TN", task_name], shell=True, check=False)
+
+    # Create: shell=False avoids cmd.exe re-quoting the /TR value.
+    # Wrap wrapper path in double quotes inside the /TR value so schtasks
+    # passes it correctly to the Task Scheduler COM API.
+    result = subprocess.run(
+        [
+            "schtasks", "/Create",
+            "/TN", task_name,
+            "/TR", f'"{wrapper_str}"',
+            "/SC", "ONLOGON",
+            "/RL", "LIMITED",
+            "/F",
+        ],
+        shell=False, check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if result.returncode != 0:
+        # Surface the actual schtasks error message so users can diagnose it
+        import click
+        click.echo(f"  [!] schtasks /Create returned {result.returncode}: {result.stderr.strip()}", err=True)
+
+    subprocess.run(
+        ["schtasks", "/Run", "/TN", task_name],
+        shell=False, check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
 
 
 def _print_next_steps() -> None:

@@ -221,12 +221,14 @@ def _decrypt_if_needed(value: str) -> str:
 def _resolve_api_key_from_data(toml_data: dict, secrets_data: dict, provider: str) -> str:
     canon = canonical_provider(provider)
     key_path = ["ai", canon, "api_key"]
+    # config.toml is the primary store — may hold an ENC: encrypted value
+    key = _gv(toml_data, key_path, "")
+    if key:
+        return _decrypt_if_needed(key)
+    # secrets.toml fallback (migration / legacy)
     key = _gv(secrets_data, key_path, "")
     if key:
         return _decrypt_if_needed(key)
-    key = _gv(toml_data, key_path, "")
-    if key:
-        return str(key)
     entry = provider_entry(canon)
     if entry.env_key:
         env_val = os.getenv(entry.env_key, "").strip()
@@ -241,9 +243,7 @@ def _fetch_models(provider_key: str, toml_data: dict, secrets_data: dict, vision
         # Fall back to [current model] so the user can at least confirm what they typed.
         from sarthak.core.ai_utils.provider_registry import _fetch_openai_compat_models
         base_url = _gv(toml_data, ["ai", "custom", "base_url"], "")
-        api_key  = _gv(secrets_data, ["ai", "custom", "api_key"], "")
-        if api_key.startswith("ENC:"):
-            api_key = _decrypt_if_needed(api_key)
+        api_key  = _resolve_api_key_from_data(toml_data, secrets_data, "custom")
         cur_model = _gv(toml_data, ["ai", "custom", "model"], "")
         if base_url:
             try:
@@ -358,7 +358,7 @@ def _configure_custom_provider(toml_data: dict, secrets_data: dict) -> tuple[boo
         toml_changed = True
 
     # ── API key ──────────────────────────────────────────────────────────────
-    cur_raw = _gv(secrets_data, ["ai", "custom", "api_key"], "")
+    cur_raw = _gv(toml_data, ["ai", "custom", "api_key"], "")
     has_key = bool(cur_raw)
     key_display = "(set)" if has_key else "(unset)"
     dim(f"API key {key_display}  — leave blank to keep existing or skip if not required")
@@ -366,9 +366,9 @@ def _configure_custom_provider(toml_data: dict, secrets_data: dict) -> tuple[boo
     if new_key:
         from sarthak.storage.encrypt import encrypt_string
         _ensure_master_key()
-        _sv(secrets_data, ["ai", "custom", "api_key"], encrypt_string(new_key))
-        secrets_changed = True
-        ok("API key saved (encrypted)")
+        _sv(toml_data, ["ai", "custom", "api_key"], encrypt_string(new_key))
+        toml_changed = True
+        ok("API key saved (encrypted in config.toml)")
 
     if toml_changed or secrets_changed:
         ok(f"Custom provider configured  [{compat} / {model or cur_model or '?'} / {(base_url or cur_base or '?')[:40]}]")
@@ -464,12 +464,14 @@ def _sync_provider_text_model(toml_data: dict, provider: str, model: str) -> Non
 
 
 def _ensure_provider_auth(toml_data: dict, secrets_data: dict, provider: str) -> bool:
+    """Prompt for API key if not already set. Saves to config.toml (encrypted).
+    Returns True if toml_data was modified."""
     if provider == "custom":
         return False  # handled entirely inside _configure_custom_provider
     canon = canonical_provider(provider)
     entry = provider_entry(canon)
     if not entry.env_key:
-        return False
+        return False  # provider needs no key (e.g. Ollama)
     cur = _resolve_api_key_from_data(toml_data, secrets_data, canon)
     if cur:
         return False
@@ -481,9 +483,9 @@ def _ensure_provider_auth(toml_data: dict, secrets_data: dict, provider: str) ->
     key_path = ["ai", canon, "api_key"]
     from sarthak.storage.encrypt import encrypt_string
     _ensure_master_key()
-    _sv(secrets_data, key_path, encrypt_string(new_val))
-    ok(f"{label} API key set")
-    return True
+    _sv(toml_data, key_path, encrypt_string(new_val))
+    ok(f"{label} API key set (saved to config.toml, encrypted)")
+    return True  # toml_dirty
 
 def _model_selector(
     label: str,
@@ -559,7 +561,7 @@ def _model_selector(
                 warn("GitHub Copilot not authenticated. Skipping provider selection.")
                 continue
 
-        secrets_changed |= _ensure_provider_auth(toml_data, secrets_data, prov)
+        toml_changed |= _ensure_provider_auth(toml_data, secrets_data, prov)
 
         if prov != cur_prov:
             _sv(toml_data, prov_path, prov)
@@ -687,16 +689,21 @@ def _save_secrets(secrets_data: dict) -> None:
     os.chmod(SECRETS_FILE, 0o600)
 
 
-def _section_api_keys(secrets_data: dict) -> bool:
-    """Edit API keys interactively. Returns secrets_dirty."""
+def _section_api_keys(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
+    """Edit miscellaneous API keys interactively. Returns (toml_dirty, secrets_dirty).
+
+    Provider API keys (Gemini, OpenAI, etc.) are set during model selection.
+    This section handles other secrets (e.g. Telegram token).
+    """
     from sarthak.storage.encrypt import encrypt_string
 
+    toml_dirty = False
     secrets_dirty = False
     _ensure_master_key()
 
     while True:
         hdr("API Keys")
-        dim("Provider API keys are set during model selection.")
+        dim("Provider AI keys are set during model selection — use 'Models & Providers'.")
         choices = []
         for name, path, hint, _encrypt in _SECRET_FIELDS:
             val = _gv(secrets_data, path, "")
@@ -728,7 +735,7 @@ def _section_api_keys(secrets_data: dict) -> bool:
         secrets_dirty = True
         ok(f"{name} updated")
 
-    return secrets_dirty
+    return toml_dirty, secrets_dirty
 
 
 # ── Submenu: General / UI ─────────────────────────────────────────────────────
@@ -775,26 +782,173 @@ def _section_general(toml_data: dict) -> bool:
 
 # ── Submenu: Channels ─────────────────────────────────────────────────────────
 
-def _section_channels(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
-    """Edit channel settings. Returns (toml_dirty, secrets_dirty)."""
+def _section_telegram(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
+    """Configure Telegram bot. Returns (toml_dirty, secrets_dirty)."""
     from sarthak.storage.encrypt import encrypt_string
 
     toml_dirty = False
     secrets_dirty = False
 
+    hdr("Telegram Bot")
+    dim("Create a bot via @BotFather and paste the token here.")
+    dim("Allowed user ID: message @userinfobot and copy the numeric ID.")
+
+    tg_enabled = _gv(toml_data, ["telegram", "enabled"], "false").lower()
+    tg_allowed = _gv(toml_data, ["telegram", "allowed_user_id"], "")
+
+    enabled = q_confirm(
+        "Enable Telegram bot?",
+        default=(tg_enabled == "true"),
+        style=_STYLE,
+    ).ask()
+    if enabled is None:
+        return toml_dirty, secrets_dirty
+    if str(enabled).lower() != tg_enabled:
+        _sv(toml_data, ["telegram", "enabled"], str(enabled).lower())
+        toml_dirty = True
+
+    new_allowed = q_text(
+        "Allowed user ID",
+        default=tg_allowed,
+        style=_STYLE,
+    ).ask()
+    if new_allowed and new_allowed != tg_allowed:
+        _sv(toml_data, ["telegram", "allowed_user_id"], new_allowed)
+        toml_dirty = True
+
+    new_token = q_secret("Bot token (blank = keep existing)", style=_STYLE).ask()
+    if new_token:
+        _ensure_master_key()
+        _sv(secrets_data, ["telegram", "bot_token"], encrypt_string(new_token))
+        secrets_dirty = True
+        ok("Telegram token updated")
+
+    cur_timeout = _gv(toml_data, ["telegram", "timeout_seconds"], "60")
+    dim("Increase timeout if your network is slow or API calls are timing out.")
+    new_timeout = q_text(
+        "HTTP timeout (seconds)",
+        default=cur_timeout,
+        style=_STYLE,
+    ).ask()
+    if new_timeout and new_timeout != cur_timeout:
+        _sv(toml_data, ["telegram", "timeout_seconds"], new_timeout)
+        toml_dirty = True
+
+    return toml_dirty, secrets_dirty
+
+
+def _section_whatsapp(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
+    """Configure WhatsApp Meta Cloud API channel. Returns (toml_dirty, secrets_dirty)."""
+    from sarthak.storage.encrypt import encrypt_string
+
+    toml_dirty = False
+    secrets_dirty = False
+
+    hdr("WhatsApp — Meta Cloud API")
+    dim("Requires a Meta Developer App with WhatsApp product enabled.")
+    dim("Get credentials at: https://developers.facebook.com/apps")
+    dim("Webhook URL to register in Meta dashboard: https://<your-host>/webhook/whatsapp")
+
+    wa_enabled = _gv(toml_data, ["whatsapp", "enabled"], "false").lower()
+
+    enabled = q_confirm(
+        "Enable WhatsApp channel?",
+        default=(wa_enabled == "true"),
+        style=_STYLE,
+    ).ask()
+    if enabled is None:
+        return toml_dirty, secrets_dirty
+    if str(enabled).lower() != wa_enabled:
+        _sv(toml_data, ["whatsapp", "enabled"], str(enabled).lower())
+        toml_dirty = True
+
+    # Phone Number ID
+    cur_phone_id = _gv(toml_data, ["whatsapp", "phone_number_id"], "")
+    dim("Found in Meta dashboard → WhatsApp → Getting Started → Phone number ID")
+    new_phone_id = q_text(
+        "Phone Number ID",
+        default=cur_phone_id,
+        style=_STYLE,
+    ).ask()
+    if new_phone_id and new_phone_id != cur_phone_id:
+        _sv(toml_data, ["whatsapp", "phone_number_id"], new_phone_id)
+        toml_dirty = True
+
+    # Access Token (permanent or temp system user token)
+    cur_token_raw = _gv(toml_data, ["whatsapp", "access_token"], "")
+    token_set = bool(cur_token_raw)
+    dim(f"Access token {('(set)' if token_set else '(unset)')} — permanent System User token recommended")
+    new_token = q_secret("Access token (blank = keep existing)", style=_STYLE).ask()
+    if new_token:
+        _ensure_master_key()
+        _sv(toml_data, ["whatsapp", "access_token"], encrypt_string(new_token))
+        toml_dirty = True
+        ok("Access token saved (encrypted in config.toml)")
+
+    # Webhook verify token
+    cur_verify = _gv(toml_data, ["whatsapp", "verify_token"], "")
+    dim("Any secret string you choose — paste the same value in Meta's webhook config")
+    new_verify = q_secret("Webhook verify token (blank = keep existing)", style=_STYLE).ask()
+    if new_verify and new_verify != cur_verify:
+        _ensure_master_key()
+        _sv(toml_data, ["whatsapp", "verify_token"], encrypt_string(new_verify))
+        toml_dirty = True
+        ok("Verify token saved (encrypted in config.toml)")
+
+    # Allowed phone (E.164 format)
+    cur_phone = _gv(toml_data, ["whatsapp", "allowed_phone"], "")
+    dim("Your WhatsApp number in E.164 format, e.g. +919876543210")
+    new_phone = q_text(
+        "Allowed phone number",
+        default=cur_phone,
+        style=_STYLE,
+    ).ask()
+    if new_phone and new_phone != cur_phone:
+        _sv(toml_data, ["whatsapp", "allowed_phone"], new_phone)
+        toml_dirty = True
+
+    # HTTP timeout
+    cur_timeout = _gv(toml_data, ["whatsapp", "timeout_seconds"], "30")
+    new_timeout = q_text(
+        "HTTP timeout (seconds)",
+        default=cur_timeout,
+        style=_STYLE,
+    ).ask()
+    if new_timeout and new_timeout != cur_timeout:
+        _sv(toml_data, ["whatsapp", "timeout_seconds"], new_timeout)
+        toml_dirty = True
+
+    if toml_dirty or secrets_dirty:
+        ok("WhatsApp channel configured")
+        info("Register webhook URL in Meta dashboard: POST /webhook/whatsapp")
+        info("Meta verification: GET  /webhook/whatsapp  (uses verify_token above)")
+
+    return toml_dirty, secrets_dirty
+
+
+def _section_channels(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
+    """Edit channel settings. Returns (toml_dirty, secrets_dirty)."""
+    toml_dirty = False
+    secrets_dirty = False
+
     while True:
         hdr("Channels")
+
+        # Telegram status
         tg_enabled = _gv(toml_data, ["telegram", "enabled"], "false").lower()
         tg_allowed = _gv(toml_data, ["telegram", "allowed_user_id"], "")
-        tg_token = _gv(secrets_data, ["telegram", "bot_token"], "")
-        token_set = bool(tg_token)
-        status = "on" if tg_enabled == "true" else "off"
-        allowed_label = tg_allowed if tg_allowed else "-"
+        tg_token   = _gv(secrets_data, ["telegram", "bot_token"], "")
+        tg_status  = f"{'on' if tg_enabled == 'true' else 'off'}, user: {tg_allowed or '-'}, token: {'set' if tg_token else 'unset'}"
+
+        # WhatsApp status
+        wa_enabled  = _gv(toml_data, ["whatsapp", "enabled"], "false").lower()
+        wa_phone_id = _gv(toml_data, ["whatsapp", "phone_number_id"], "")
+        wa_token    = _gv(toml_data, ["whatsapp", "access_token"], "")
+        wa_status   = f"{'on' if wa_enabled == 'true' else 'off'}, phone_id: {'set' if wa_phone_id else 'unset'}, token: {'set' if wa_token else 'unset'}"
+
         choices = [
-            questionary.Choice(
-                f"  Telegram bot     [{status}, user: {allowed_label}, token: {'set' if token_set else 'unset'}]",
-                value="telegram",
-            ),
+            questionary.Choice(f"  Telegram     [{tg_status}]",  value="telegram"),
+            questionary.Choice(f"  WhatsApp     [{wa_status}]",  value="whatsapp"),
             questionary.Separator(),
             questionary.Choice("  <- Back", value="__back__"),
         ]
@@ -803,50 +957,14 @@ def _section_channels(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
         if sel in (None, "__back__"):
             break
 
-        if sel != "telegram":
-            continue
-
-        hdr("Telegram Bot")
-        dim("Create a bot via @BotFather and paste the token here.")
-        dim("Allowed user ID: message @userinfobot and copy the numeric ID.")
-
-        enabled = q_confirm(
-            "Enable Telegram bot?",
-            default=(tg_enabled == "true"),
-            style=_STYLE,
-        ).ask()
-        if enabled is None:
-            continue
-        if str(enabled).lower() != tg_enabled:
-            _sv(toml_data, ["telegram", "enabled"], str(enabled).lower())
-            toml_dirty = True
-
-        new_allowed = q_text(
-            "Allowed user ID",
-            default=tg_allowed,
-            style=_STYLE,
-        ).ask()
-        if new_allowed and new_allowed != tg_allowed:
-            _sv(toml_data, ["telegram", "allowed_user_id"], new_allowed)
-            toml_dirty = True
-
-        new_token = q_secret("Bot token", style=_STYLE).ask()
-        if new_token:
-            _ensure_master_key()
-            _sv(secrets_data, ["telegram", "bot_token"], encrypt_string(new_token))
-            secrets_dirty = True
-            ok("Telegram token updated")
-
-        cur_timeout = _gv(toml_data, ["telegram", "timeout_seconds"], "60")
-        dim("Increase timeout if your network is slow or API calls are timing out.")
-        new_timeout = q_text(
-            "HTTP timeout (seconds)",
-            default=cur_timeout,
-            style=_STYLE,
-        ).ask()
-        if new_timeout and new_timeout != cur_timeout:
-            _sv(toml_data, ["telegram", "timeout_seconds"], new_timeout)
-            toml_dirty = True
+        if sel == "telegram":
+            tg_toml, tg_secrets = _section_telegram(toml_data, secrets_data)
+            toml_dirty |= tg_toml
+            secrets_dirty |= tg_secrets
+        elif sel == "whatsapp":
+            wa_toml, wa_secrets = _section_whatsapp(toml_data, secrets_data)
+            toml_dirty |= wa_toml
+            secrets_dirty |= wa_secrets
 
     return toml_dirty, secrets_dirty
 
@@ -984,28 +1102,190 @@ def _section_fallback(toml_data: dict, secrets_data: dict) -> bool:
 
 # ── Submenu: Tools ──────────────────────────────────────────────────────────────
 
-_WHISPER_PARAMS: list[tuple[str, list[str], str, str]] = [
-    # (label, toml path, hint, default)
-    ("Model",      ["whisper", "model"],      "base.en | base | small | medium | large-v3", "base.en"),
-    ("Model path", ["whisper", "model_path"], "Absolute path to .bin file (blank = auto)",  ""),
-    ("Device",     ["whisper", "device"],     "CPU | GPU | NPU",                            "CPU"),
-    ("Beam size",  ["whisper", "beam_size"],  "1 = fastest, 5 = best quality",              "5"),
-    ("Threads",    ["whisper", "threads"],    "CPU threads (0 = whisper-cli default)",       "0"),
-    ("Language",   ["whisper", "language"],   "en | fr | de | ... or auto",                 "auto"),
+# (label, toml path, hint, default)
+_STT_PROVIDER_PARAMS: dict[str, list[tuple[str, list[str], str, str]]] = {
+    "whisper": [
+        ("Model",      ["stt", "whisper", "model"],      "base.en | base | small | medium | large-v3", "base.en"),
+        ("Model path", ["stt", "whisper", "model_path"], "Absolute path to .bin file (blank = auto)",  ""),
+        ("Device",     ["stt", "whisper", "device"],     "CPU | GPU | NPU",                            "CPU"),
+        ("Beam size",  ["stt", "whisper", "beam_size"],  "1 = fastest, 5 = best quality",              "5"),
+        ("Threads",    ["stt", "whisper", "threads"],    "CPU threads (0 = whisper-cli default)",       "0"),
+        ("Language",   ["stt", "language"],              "en | fr | de | ... or auto",                 "auto"),
+    ],
+    "openai": [
+        ("API key",  ["stt", "openai", "api_key"],  "or set env OPENAI_API_KEY",                             ""),
+        ("Model",    ["stt", "openai", "model"],    "whisper-1",                                             "whisper-1"),
+        ("Base URL", ["stt", "openai", "base_url"], "blank = default; override for Azure / compatible APIs", ""),
+    ],
+    "groq": [
+        ("API key", ["stt", "groq", "api_key"], "or set env GROQ_API_KEY",              ""),
+        ("Model",   ["stt", "groq", "model"],   "whisper-large-v3-turbo | whisper-large-v3", "whisper-large-v3-turbo"),
+    ],
+    "deepgram": [
+        ("API key", ["stt", "deepgram", "api_key"], "or set env DEEPGRAM_API_KEY", ""),
+        ("Model",   ["stt", "deepgram", "model"],   "nova-2 | nova | enhanced",    "nova-2"),
+        ("Tier",    ["stt", "deepgram", "tier"],    "blank = default",             ""),
+    ],
+    "assemblyai": [
+        ("API key", ["stt", "assemblyai", "api_key"], "or set env ASSEMBLYAI_API_KEY", ""),
+    ],
+}
+
+_STT_PROVIDERS = [
+    ("whisper",    "local, fully offline"),
+    ("openai",     "OpenAI Whisper API"),
+    ("groq",       "Groq Whisper API"),
+    ("deepgram",   "Deepgram Nova-2"),
+    ("assemblyai", "AssemblyAI Universal"),
 ]
+
+
+# Per-platform whisper.cpp install guidance shown during interactive install
+_WHISPER_INSTALL_GUIDE: dict[str, list[str]] = {
+    "linux": [
+        "Option A — pip wheel (CPU-only, easiest):",
+        "  pip install openai-whisper",
+        "Option B — whisper.cpp (faster, GPU support):",
+        "  sudo apt install build-essential cmake",
+        "  git clone https://github.com/ggml-org/whisper.cpp && cd whisper.cpp",
+        "  cmake -B build && cmake --build build -j$(nproc)",
+        "  sudo cp build/bin/whisper-cli /usr/local/bin/",
+    ],
+    "darwin": [
+        "Option A — Homebrew (recommended):",
+        "  brew install whisper-cpp",
+        "Option B — build from source (Apple Silicon GPU):",
+        "  git clone https://github.com/ggml-org/whisper.cpp && cd whisper.cpp",
+        "  cmake -B build -DGGML_METAL=ON && cmake --build build -j$(sysctl -n hw.ncpu)",
+        "  sudo cp build/bin/whisper-cli /usr/local/bin/",
+    ],
+    "win32": [
+        "Option A — pip wheel (CPU-only, easiest):",
+        "  pip install openai-whisper",
+        "Option B — pre-built binary:",
+        "  Download from: https://github.com/ggml-org/whisper.cpp/releases",
+        "  Extract whisper-cli.exe and add its folder to PATH.",
+    ],
+}
+
+
+def _whisper_cli_found() -> bool:
+    import shutil
+    return bool(shutil.which("whisper-cli") or shutil.which("whisper"))
+
+
+def _install_whisper_interactive(toml_data: dict) -> bool:
+    """Guide the user through installing whisper-cli and optionally downloading a model.
+    Returns toml_dirty."""
+    import urllib.request
+    toml_dirty = False
+    platform_key = sys.platform if sys.platform in _WHISPER_INSTALL_GUIDE else "linux"
+
+    hdr("Whisper STT — Install")
+    if _whisper_cli_found():
+        ok("whisper-cli already found in PATH — nothing to install.")
+    else:
+        warn("whisper-cli not found in PATH.")
+        click.echo("")
+        for line in _WHISPER_INSTALL_GUIDE[platform_key]:
+            info(line)
+        click.echo("")
+        input("  Press Enter once whisper-cli is installed and in PATH…")
+        if _whisper_cli_found():
+            ok("whisper-cli found — install confirmed!")
+        else:
+            warn("Still not found in PATH. You can re-run this step after adding it to PATH.")
+            return toml_dirty
+
+    # Offer to download the default model
+    model_name = _gv(toml_data, ["stt", "whisper", "model"], _gv(toml_data, ["whisper", "model"], "base.en"))
+    models_dir = BASE_DIR / "whisper_models"
+    model_file = models_dir / f"ggml-{model_name}.bin"
+
+    if model_file.exists():
+        ok(f"Model already downloaded: {model_file}")
+        _sv(toml_data, ["stt", "whisper", "model_path"], str(model_file))
+        return toml_dirty
+
+    ans = questionary.confirm(
+        f"  Download default model ({model_name}) to {models_dir}?",
+        default=True, style=_STYLE,
+    ).ask()
+    if not ans:
+        return toml_dirty
+
+    url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model_name}.bin"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    info(f"Downloading {url} …")
+    try:
+        urllib.request.urlretrieve(url, model_file)
+        ok(f"Saved to {model_file}")
+        _sv(toml_data, ["stt", "whisper", "model_path"], str(model_file))
+        toml_dirty = True
+    except Exception as exc:
+        warn(f"Download failed: {exc}")
+        info("You can place the .bin file manually in ~/.sarthak_ai/whisper_models/ and set model_path in settings.")
+
+    return toml_dirty
+
+
+def _invalidate_stt() -> None:
+    try:
+        from sarthak.spaces.roadmap.stt import invalidate_stt_cache
+        invalidate_stt_cache()
+    except Exception:
+        pass
+
+
+def _edit_stt_provider_params(toml_data: dict, provider_key: str) -> bool:
+    """Edit all params for an STT provider inline. Returns toml_dirty."""
+    params = _STT_PROVIDER_PARAMS.get(provider_key, [])
+    hdr(f"STT — {provider_key.title()} Settings")
+    toml_dirty = False
+    while True:
+        param_choices = [
+            questionary.Choice(
+                f"  {label:<12} [{'*****' if 'key' in label.lower() and _gv(toml_data, path, default) else _gv(toml_data, path, default)}]",
+                value=label,
+            )
+            for label, path, hint, default in params
+        ]
+        param_choices += [questionary.Separator(), questionary.Choice("  <- Back", value="__back__")]
+        sel = q_select(f"{provider_key.title()} parameter", choices=param_choices, style=_STYLE, pointer=_POINTER).ask()
+        if sel in (None, "__back__"):
+            break
+        entry = next((e for e in params if e[0] == sel), None)
+        if not entry:
+            continue
+        label, path, hint, default = entry
+        cur = _gv(toml_data, path, default)
+        dim(hint)
+        new_val = q_text(label, default=cur, style=_STYLE).ask()
+        if new_val is not None and new_val != cur:
+            _sv(toml_data, path, new_val)
+            ok(f"{label} -> {new_val}")
+            toml_dirty = True
+            _invalidate_stt()
+    return toml_dirty
 
 
 def _section_tools(toml_data: dict) -> bool:
     """Configure external tools. Returns toml_dirty."""
-    import shutil
     toml_dirty = False
 
     while True:
         hdr("Tools")
-        cli_found = bool(shutil.which("whisper-cli") or shutil.which("whisper"))
-        whisper_status = "cli: found" if cli_found else "cli: not found"
+        whisper_ok = _whisper_cli_found()
+        w_status = "installed" if whisper_ok else "not installed"
+        cur_provider = _gv(toml_data, ["stt", "provider"], "whisper")
         choices = [
-            questionary.Choice(f"  Whisper STT  [{whisper_status}]", value="whisper"),
+            questionary.Choice(f"  STT provider   [active: {cur_provider}]", value="stt_provider"),
+            questionary.Separator(),
+            questionary.Choice(f"  Whisper — install  [{w_status}]", value="whisper_install"),
+        ] + [
+            questionary.Choice(f"  {p:<12} settings", value=f"{p}_settings")
+            for p, _ in _STT_PROVIDERS
+        ] + [
             questionary.Separator(),
             questionary.Choice("  <- Back", value="__back__"),
         ]
@@ -1013,38 +1293,28 @@ def _section_tools(toml_data: dict) -> bool:
         if sel in (None, "__back__"):
             break
 
-        # ── Whisper ──────────────────────────────────────────────────────────
-        hdr("Whisper STT")
-        if not cli_found:
-            warn("whisper-cli not found in PATH.")
-            info("Install: https://github.com/ggml-org/whisper.cpp")
-            info("Models go in ~/.sarthak_ai/whisper_models/")
-        else:
-            ok("whisper-cli found in PATH")
-
-        while True:
-            param_choices = []
-            for label, path, hint, _default in _WHISPER_PARAMS:
-                cur = _gv(toml_data, path, _default)
-                param_choices.append(questionary.Choice(f"  {label:<12} [{cur}]", value=label))
-            param_choices.append(questionary.Separator())
-            param_choices.append(questionary.Choice("  <- Back", value="__back__"))
-
-            sel2 = q_select("Whisper parameter", choices=param_choices, style=_STYLE, pointer=_POINTER).ask()
-            if sel2 in (None, "__back__"):
-                break
-
-            entry = next((e for e in _WHISPER_PARAMS if e[0] == sel2), None)
-            if not entry:
-                continue
-            label, path, hint, default = entry
-            cur = _gv(toml_data, path, default)
-            dim(hint)
-            new_val = q_text(label, default=cur, style=_STYLE).ask()
-            if new_val is not None and new_val != cur:
-                _sv(toml_data, path, new_val)
-                ok(f"{label} -> {new_val}")
+        if sel == "stt_provider":
+            hdr("STT — Choose Provider")
+            cur = _gv(toml_data, ["stt", "provider"], "whisper")
+            new_provider = q_select(
+                f"Provider (current: {cur})",
+                choices=[questionary.Choice(f"  {p:<12} — {desc}", value=p) for p, desc in _STT_PROVIDERS],
+                style=_STYLE, pointer=_POINTER,
+            ).ask()
+            if new_provider and new_provider != cur:
+                _sv(toml_data, ["stt", "provider"], new_provider)
+                ok(f"STT provider → {new_provider}")
                 toml_dirty = True
+                _invalidate_stt()
+
+        elif sel == "whisper_install":
+            toml_dirty |= _install_whisper_interactive(toml_data)
+
+        elif sel and sel.endswith("_settings"):
+            provider_key = sel[:-len("_settings")]
+            if provider_key == "whisper" and not whisper_ok:
+                warn("whisper-cli not found in PATH. Configure paths/params anyway?")
+            toml_dirty |= _edit_stt_provider_params(toml_data, provider_key)
 
     return toml_dirty
 
@@ -1066,12 +1336,19 @@ def install_whisper_defaults() -> None:
     models_dir = BASE_DIR / "whisper_models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    w = toml_data.get("whisper")
+    # Prefer [stt.whisper]; fall back to legacy [whisper] for existing installs
+    stt_cfg = toml_data.setdefault("stt", tomlkit.table())
+    if not isinstance(stt_cfg, dict):
+        toml_data["stt"] = tomlkit.table()
+        stt_cfg = toml_data["stt"]
+    w = stt_cfg.get("whisper")
     if not isinstance(w, dict):
-        toml_data["whisper"] = tomlkit.table()
-        w = toml_data["whisper"]
+        stt_cfg["whisper"] = tomlkit.table()
+        w = stt_cfg["whisper"]
 
-    model = str(w.get("model", "base.en")).strip() or "base.en"
+    # Fall back to legacy [whisper] model name if not set in [stt.whisper]
+    legacy_w = toml_data.get("whisper", {})
+    model = str(w.get("model") or legacy_w.get("model") or "base.en").strip() or "base.en"
     model_file = models_dir / f"ggml-{model}.bin"
 
     _MIN = 10 * 1024 * 1024
@@ -1100,13 +1377,17 @@ def install_whisper_defaults() -> None:
         "device": "CPU",
         "beam_size": 5,
         "threads": 0,
-        "language": "auto",
     }
     for k, v in defaults.items():
         if k not in w:
             w[k] = v
     # Always sync model_path to the downloaded file
     w["model_path"] = str(model_file)
+    # Ensure provider is set to whisper if not yet configured
+    if not stt_cfg.get("provider"):
+        stt_cfg["provider"] = "whisper"
+    if not stt_cfg.get("language"):
+        stt_cfg["language"] = "auto"
     config_file.write_text(tomlkit.dumps(toml_data))
     ok("Whisper defaults written to config.toml")
 
@@ -1235,6 +1516,181 @@ def _section_agent_sandbox(toml_data: dict) -> bool:
                     toml_dirty = True
 
     return toml_dirty
+
+
+# ── Submenu: Database Backends ───────────────────────────────────────────────
+
+_RELATIONAL_BACKENDS = [
+    ("sqlite",   "sqlite_vec default, zero deps — built-in"),
+    ("postgres", "PostgreSQL  requires: pip install sarthak[postgres]"),
+    ("duckdb",   "DuckDB      requires: pip install sarthak[duckdb]"),
+    ("libsql",   "LibSQL/Turso requires: pip install sarthak[libsql]"),
+]
+
+_VECTOR_BACKENDS = [
+    ("sqlite_vec", "sqlite-vec  default, zero deps — built-in"),
+    ("qdrant",     "Qdrant      requires: pip install sarthak[qdrant]"),
+    ("chroma",     "Chroma      requires: pip install sarthak[chroma]"),
+    ("pgvector",   "pgvector    requires: pip install sarthak[pgvector]"),
+    ("lancedb",    "LanceDB     requires: pip install sarthak[lancedb]"),
+    ("weaviate",   "Weaviate    requires: pip install sarthak[weaviate]"),
+]
+
+# Connection string fields per backend: (label, toml path, hint, is_secret)
+_BACKEND_FIELDS: dict[str, list[tuple[str, list[str], str, bool]]] = {
+    "postgres": [
+        ("URL",       ["storage", "postgres", "url"],       "postgresql+asyncpg://user:pass@host/db", False),
+        ("Pool size", ["storage", "postgres", "pool_size"], "2–20",                                   False),
+    ],
+    "duckdb": [
+        ("Path", ["storage", "duckdb", "path"], "~/.sarthak_ai/sarthak.duckdb", False),
+    ],
+    "libsql": [
+        ("URL",        ["storage", "libsql", "url"],        "file://~/.sarthak_ai/sarthak.db or libsql://<db>.turso.io", False),
+        ("Auth token", ["storage", "libsql", "auth_token"], "Turso auth token (leave blank for local file)",              True),
+    ],
+    "qdrant": [
+        ("URL",               ["storage", "qdrant", "url"],               "http://localhost:6333",  False),
+        ("API key",           ["storage", "qdrant", "api_key"],           "leave blank if no auth", True),
+        ("Collection prefix", ["storage", "qdrant", "collection_prefix"], "sarthak",                False),
+    ],
+    "chroma": [
+        ("Persist dir", ["storage", "chroma", "persist_directory"], "~/.sarthak_ai/chroma", False),
+        ("Host",        ["storage", "chroma", "host"],               "blank = local client",  False),
+        ("Port",        ["storage", "chroma", "port"],               "8000",                  False),
+    ],
+    "pgvector": [
+        ("URL",          ["storage", "postgres", "url"],          "postgresql+asyncpg://user:pass@host/db", False),
+        ("Table prefix", ["storage", "pgvector", "table_prefix"], "sarthak",                              False),
+    ],
+    "lancedb": [
+        ("URI", ["storage", "lancedb", "uri"], "~/.sarthak_ai/lancedb  or  s3://bucket/path", False),
+    ],
+    "weaviate": [
+        ("URL",       ["storage", "weaviate", "url"],       "http://localhost:8080", False),
+        ("API key",   ["storage", "weaviate", "api_key"],   "leave blank if no auth", True),
+        ("gRPC port", ["storage", "weaviate", "grpc_port"], "50051",                  False),
+    ],
+}
+
+_REDIS_FIELDS: list[tuple[str, list[str], str, bool]] = [
+    ("URL",         ["storage", "redis", "url"],         "redis://localhost:6379/0  — blank = in-process LRU", False),
+    ("Default TTL", ["storage", "redis", "default_ttl"], "seconds (default 300)",                              False),
+]
+
+
+def _section_database(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
+    """Configure relational backend, vector backend, and cache. Returns (toml_dirty, secrets_dirty)."""
+    toml_dirty = False
+    secrets_dirty = False
+
+    while True:
+        cur_db  = _gv(toml_data, ["storage", "backend"],        "sqlite")
+        cur_vec = _gv(toml_data, ["storage", "vector_backend"], "sqlite_vec")
+        cur_redis = _gv(toml_data, ["storage", "redis", "url"], "")
+        cache_label = "redis" if cur_redis else "lru (in-process)"
+
+        hdr("Database Backends")
+        dim("Defaults (sqlite + sqlite_vec) need no extra packages.")
+        dim("Other backends require: pip install sarthak[<extra>]")
+
+        choices = [
+            questionary.Choice(f"  Relational DB   [{cur_db}]",   value="relational"),
+            questionary.Choice(f"  Vector / RAG    [{cur_vec}]",  value="vector"),
+            questionary.Choice(f"  Cache           [{cache_label}]", value="cache"),
+            questionary.Separator(),
+            questionary.Choice("  <- Back", value="__back__"),
+        ]
+        sel = q_select("Select backend type", choices=choices, style=_STYLE, pointer=_POINTER).ask()
+        if sel in (None, "__back__"):
+            break
+
+        # ── Relational ──────────────────────────────────────────────────────
+        if sel == "relational":
+            hdr("Relational Backend")
+            backend_choices = [
+                questionary.Choice(f"  {name:<12} — {desc}", value=name)
+                for name, desc in _RELATIONAL_BACKENDS
+            ] + [questionary.Choice("  <- Back", value="__back__")]
+
+            new_db = q_select(
+                "Backend", choices=backend_choices,
+                default=cur_db, style=_STYLE, pointer=_POINTER,
+            ).ask()
+            if new_db in (None, "__back__"):
+                continue
+
+            if new_db != cur_db:
+                _sv(toml_data, ["storage", "backend"], new_db)
+                toml_dirty = True
+                ok(f"Relational backend → {new_db}")
+
+            # Configure connection fields for non-sqlite backends
+            fields = _BACKEND_FIELDS.get(new_db, [])
+            for label, path, hint, is_secret in fields:
+                cur_val = _gv(toml_data if not is_secret else secrets_data, path, "")
+                dim(hint)
+                val = (q_secret if is_secret else q_text)(label, default=cur_val, style=_STYLE).ask()
+                if val and val != cur_val:
+                    _sv(secrets_data if is_secret else toml_data, path, val)
+                    (secrets_dirty := True) if is_secret else (toml_dirty := True)  # type: ignore[func-returns-value]
+                    if not is_secret:
+                        toml_dirty = True
+                    else:
+                        secrets_dirty = True
+                    ok(f"{label} set")
+
+        # ── Vector ──────────────────────────────────────────────────────────
+        elif sel == "vector":
+            hdr("Vector / RAG Backend")
+            vec_choices = [
+                questionary.Choice(f"  {name:<12} — {desc}", value=name)
+                for name, desc in _VECTOR_BACKENDS
+            ] + [questionary.Choice("  <- Back", value="__back__")]
+
+            new_vec = q_select(
+                "Backend", choices=vec_choices,
+                default=cur_vec, style=_STYLE, pointer=_POINTER,
+            ).ask()
+            if new_vec in (None, "__back__"):
+                continue
+
+            if new_vec != cur_vec:
+                _sv(toml_data, ["storage", "vector_backend"], new_vec)
+                toml_dirty = True
+                ok(f"Vector backend → {new_vec}")
+                if new_vec != "sqlite_vec":
+                    warn("Re-index your spaces after switching vector backends.")
+
+            fields = _BACKEND_FIELDS.get(new_vec, [])
+            for label, path, hint, is_secret in fields:
+                cur_val = _gv(toml_data if not is_secret else secrets_data, path, "")
+                dim(hint)
+                val = (q_secret if is_secret else q_text)(label, default=cur_val, style=_STYLE).ask()
+                if val and val != cur_val:
+                    if is_secret:
+                        _sv(secrets_data, path, val)
+                        secrets_dirty = True
+                    else:
+                        _sv(toml_data, path, val)
+                        toml_dirty = True
+                    ok(f"{label} set")
+
+        # ── Cache ────────────────────────────────────────────────────────────
+        elif sel == "cache":
+            hdr("Cache Backend")
+            dim("Leave Redis URL blank to use fast in-process LRU (default, no deps).")
+            dim("Set Redis URL to share cache across processes or workers.")
+            for label, path, hint, is_secret in _REDIS_FIELDS:
+                cur_val = _gv(toml_data, path, "")
+                dim(hint)
+                val = q_text(label, default=cur_val, style=_STYLE).ask()
+                if val is not None and val != cur_val:
+                    _sv(toml_data, path, val)
+                    toml_dirty = True
+                    ok(f"{label} → {val or '(cleared — using LRU)'}")
+
+    return toml_dirty, secrets_dirty
 
 
 # ── Submenu: Health Check ─────────────────────────────────────────────────────
@@ -1490,6 +1946,17 @@ def run_wizard() -> None:
     dim(f"config: {config_file}")
     click.echo("")
 
+    # On first configure, prompt tools setup upfront if whisper is missing
+    if not _whisper_cli_found():
+        warn("[!] Whisper STT is not installed (voice dictation unavailable).")
+        ans = questionary.confirm(
+            "  Set up Whisper now before continuing?",
+            default=True, style=_STYLE,
+        ).ask()
+        if ans:
+            toml_dirty |= _install_whisper_interactive(toml_data)
+        click.echo("")
+
     while True:
         _stale: dict[str, str] = {}
         cur_prov  = _gv(toml_data, ["ai", "default_provider"], "?")
@@ -1514,8 +1981,9 @@ def run_wizard() -> None:
             questionary.Choice(f"  Fallback Models    [{fb_status}]",               value="fallback"),
             questionary.Choice(f"  Secrets / Keys",                                 value="keys"),
             questionary.Choice(f"  General / UI",                                   value="general"),
-            questionary.Choice(f"  Channels          [telegram: {'on' if tg_on == 'true' else 'off'}]", value="channels"),
-            questionary.Choice(f"  Tools",                                           value="tools"),
+            questionary.Choice(f"  Channels          [tg: {'on' if tg_on == 'true' else 'off'}, wa: {'on' if _gv(toml_data, ['whatsapp', 'enabled'], 'false').lower() == 'true' else 'off'}]", value="channels"),
+            questionary.Choice(f"  Tools {'[!] whisper missing' if not _whisper_cli_found() else '[ok]'}", value="tools"),
+            questionary.Choice(f"  Database Backends",                               value="database"),
             questionary.Choice(f"  Agent Sandbox",                                   value="sandbox"),
             questionary.Choice(f"  Quick Presets",                                   value="presets"),
             questionary.Choice(f"  Health Check",                                   value="health"),
@@ -1559,7 +2027,9 @@ def run_wizard() -> None:
             toml_dirty |= model_toml
             secrets_dirty |= model_secrets
         elif action == "keys":
-            secrets_dirty |= _section_api_keys(secrets_data)
+            _keys_toml, _keys_secrets = _section_api_keys(toml_data, secrets_data)
+            toml_dirty |= _keys_toml
+            secrets_dirty |= _keys_secrets
         elif action == "general":
             toml_dirty |= _section_general(toml_data)
         elif action == "channels":
@@ -1572,6 +2042,10 @@ def run_wizard() -> None:
             _section_health(toml_data)
         elif action == "tools":
             toml_dirty |= _section_tools(toml_data)
+        elif action == "database":
+            db_toml, db_secrets = _section_database(toml_data, secrets_data)
+            toml_dirty |= db_toml
+            secrets_dirty |= db_secrets
         elif action == "sandbox":
             toml_dirty |= _section_agent_sandbox(toml_data)
         elif action == "export":

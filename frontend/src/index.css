@@ -525,7 +525,7 @@ input, textarea, select { font-family: var(--font); }
 .empty-desc  { font-size: 12.5px; max-width: 280px; line-height: 1.6; }
 
 /* Keep legacy class names working */
-.empty-ttl  { font-size: 13.5px; font-weight: 600; color: var(--txt2); }
+.empty-ttl, .empty-title { font-size: 13.5px; font-weight: 600; color: var(--txt2); }
 
 .loading-center {
   display: flex;
@@ -680,6 +680,7 @@ input, textarea, select { font-family: var(--font); }
 /* ── Config editor ──────────────────────────────────────────── */
 .config-editor {
   flex: 1;
+  min-height: 0;
   resize: none;
   font-family: var(--mono);
   font-size: 13px;
@@ -717,27 +718,176 @@ input, textarea, select { font-family: var(--font); }
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 14px;
 }
+
+/* Legacy .space-card kept for any remnant usages */
 .space-card {
   background: var(--surface);
   border: 1px solid var(--brd);
   border-radius: var(--r);
-  padding: 20px;
+  padding: 12px 16px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
   transition: border-color 160ms, transform 160ms, box-shadow 160ms;
+  position: relative;
 }
-.space-card:hover {
-  border-color: var(--accent-border);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px rgba(0,0,0,.25);
-}
+.space-card:hover { border-color: var(--accent-border); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.22); }
 .space-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.space-card-name { font-size: 14px; font-weight: 650; color: var(--txt); }
-.space-card-dir  { font-size: 10px; color: var(--txt3); margin-top: 2px; }
-.space-card-desc { font-size: 12.5px; color: var(--txt2); line-height: 1.5; flex: 1; }
+.space-card-name { font-size: 13.5px; font-weight: 650; color: var(--txt); }
+.space-card-dir  { font-size: 10px; color: var(--txt3); margin-top: 1px; }
 .space-card-foot { display: flex; align-items: center; gap: 8px; }
+
+/* ── New SpaceCard v2 (list page) ───────────────────────────── */
+.space-card-v2 {
+  --card-color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--brd);
+  border-radius: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: border-color 180ms, transform 180ms, box-shadow 180ms;
+  position: relative;
+}
+.space-card-v2:hover {
+  border-color: var(--card-color);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(0,0,0,.28);
+}
+.space-card-v2[data-active="true"] {
+  border-color: var(--card-color);
+  box-shadow: 0 0 0 1px var(--card-color), 0 4px 18px rgba(0,0,0,.22);
+}
+
+.sc2-accent-bar {
+  height: 3px;
+  background: var(--card-color);
+  width: 100%;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.sc2-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sc2-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sc2-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  width: 32px;
+  text-align: center;
+}
+.sc2-info {
+  flex: 1;
+  min-width: 0;
+}
+.sc2-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--txt);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc2-active-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--card-color);
+  background: color-mix(in srgb, var(--card-color) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--card-color) 40%, transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  letter-spacing: .05em;
+  flex-shrink: 0;
+}
+.sc2-dir {
+  font-size: 10.5px;
+  color: var(--txt3);
+  margin-top: 2px;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sc2-desc {
+  font-size: 12px;
+  color: var(--txt3);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  transition: all 200ms ease;
+  padding: 6px 10px;
+  background: var(--surface2);
+  border-radius: 6px;
+  border: 1px solid var(--brd);
+}
+.sc2-desc--open {
+  -webkit-line-clamp: 4;
+  color: var(--txt2);
+  border-color: color-mix(in srgb, var(--card-color) 30%, transparent);
+  background: color-mix(in srgb, var(--card-color) 6%, var(--surface2));
+}
+
+.sc2-stats {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.sc2-stat {
+  font-size: 11px;
+  color: var(--txt3);
+}
+.sc2-stat strong {
+  color: var(--txt2);
+  font-weight: 700;
+}
+
+.sc2-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 2px;
+  border-top: 1px solid var(--brd);
+}
+.sc2-date {
+  font-size: 10.5px;
+  color: var(--txt3);
+}
+.sc2-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.sc2-settings-btn {
+  font-size: 12px;
+  padding: 3px 9px !important;
+}
+.sc2-activate-btn {
+  font-size: 11.5px;
+  padding: 4px 12px !important;
+  font-weight: 600;
+  border-radius: 6px;
+  transition: opacity 150ms;
+}
+.sc2-activate-btn:hover { opacity: 0.8; }
 
 .prog-ring       { position: relative; width: 44px; height: 44px; flex-shrink: 0; }
 .prog-ring svg   { display: block; }
@@ -758,7 +908,7 @@ input, textarea, select { font-family: var(--font); }
 .sh-left { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
 .sh-right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; flex-shrink: 0; }
 .sh-stats { display: flex; gap: 16px; align-items: center; }
-.sh-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.sh-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; overflow-x: auto; max-width: 100%; }
 
 .progress-ring-wrap { position: relative; width: 64px; height: 64px; flex-shrink: 0; }
 .progress-ring-bg { fill: none; stroke: var(--surface3); stroke-width: 4; }

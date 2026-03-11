@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import { api, fmt } from '../api';
+import { api } from '../api';
+import { fmt } from '../utils/format';
 import { useStore } from '../store';
 import MarkdownEditor from '../components/MarkdownEditor';
 import CodeMirror from '@uiw/react-codemirror';

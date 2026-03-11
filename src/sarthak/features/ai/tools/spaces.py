@@ -39,9 +39,15 @@ def _run(coro):
 def tool_spaces_session(space_dir: str = "", space_type: str = "data_science") -> str:
     """Run a Sarthak Spaces learning session. Returns the full learning reply."""
     from sarthak.spaces.orchestrator import SpacesOrchestrator
+    from sarthak.spaces.models import SpaceType
     try:
-        orch = SpacesOrchestrator(Path(space_dir).resolve() if space_dir else Path.cwd())
-        result = _run(orch.next_session())
+        ws_dir = Path(space_dir).resolve() if space_dir else Path.cwd()
+        orch = SpacesOrchestrator(ws_dir)
+        try:
+            st = SpaceType(space_type)
+        except ValueError:
+            st = SpaceType.DATA_SCIENCE
+        result = _run(orch.next_session(space_type=st))
         return result.reply
     except Exception as exc:
         log.warning("tool_spaces_session_failed", error=str(exc))
@@ -129,10 +135,16 @@ def tool_spaces_init(
 # ── Context (summary for agent injection) ─────────────────────────────────────
 
 def tool_spaces_context(space_dir: str = "") -> str:
-    """Return the active space context summary (goal, tools, recent sessions)."""
+    """Return space context: goal/tools/sessions + SOUL + behavioural MEMORY."""
     from sarthak.spaces.store import get_space_context
+    from sarthak.spaces.memory import read_context_block
     try:
-        return get_space_context(Path(space_dir).resolve() if space_dir else None) or "No active space."
+        ws_dir = Path(space_dir).resolve() if space_dir else None
+        space_ctx  = get_space_context(ws_dir) or "No active space."
+        memory_ctx = read_context_block(ws_dir or Path.cwd(), max_chars=800) if ws_dir or Path.cwd() else ""
+        if memory_ctx:
+            return f"{space_ctx}\n\n---\n{memory_ctx}"
+        return space_ctx
     except Exception as exc:
         return f"Space context failed: {exc}"
 
@@ -171,9 +183,53 @@ def tool_spaces_rag_search(query: str, space_dir: str = "", top_k: int = 5) -> s
     from sarthak.spaces.rag import search_space
     try:
         ws_dir = Path(space_dir).resolve() if space_dir else Path.cwd()
-        return search_space(ws_dir, query, top_k=top_k)
+        return _run(search_space(ws_dir, query, top_k=top_k))
     except Exception as exc:
         return f"RAG search failed: {exc}"
+
+
+# ── Workspace Q&A — answer questions about sessions, RAG, DB, notes, SQL ─────────
+
+def tool_workspace_qa(question: str, space_dir: str = "") -> str:
+    """
+    Answer any question about the workspace: sessions, notes, RAG index, SRS DB,
+    concept progress, activity store, SQL queries, file index, etc.
+
+    Examples:
+      "How many sessions did I do this week?"
+      "What concepts am I struggling with?"
+      "What files are indexed in RAG?"
+      "Show me recent notes on linear regression"
+      "What quicktests did I fail?"
+      "Run a SQL query: SELECT * FROM notes LIMIT 5"
+    """
+    from sarthak.spaces.workspace_qa import answer_workspace_question
+    try:
+        ws_dir = Path(space_dir).resolve() if space_dir else Path.cwd()
+        return _run(answer_workspace_question(ws_dir, question))
+    except Exception as exc:
+        log.warning("tool_workspace_qa_failed", error=str(exc))
+        return f"Workspace Q&A failed: {exc}"
+
+
+def tool_workspace_analyse(space_dir: str = "") -> str:
+    """Force-refresh Optimal_Learn.md for a space (reads all learner signals + recommendations)."""
+    from sarthak.spaces.store import load_profile
+    from sarthak.spaces.models import SpaceContext
+    from sarthak.spaces.agents import WorkspaceAnalyserAgent, detect_platform
+    try:
+        ws_dir = Path(space_dir).resolve() if space_dir else Path.cwd()
+        profile = load_profile(ws_dir)
+        if not profile:
+            return "No space found at this directory. Run: sarthak spaces init"
+        ctx = SpaceContext(workspace_dir=str(ws_dir), profile=profile, platform=detect_platform())
+        analyser = WorkspaceAnalyserAgent()
+        content = _run(analyser.analyse(ctx))
+        analyser.write_optimal_learn(ws_dir, content)
+        return content
+    except Exception as exc:
+        log.warning("tool_workspace_analyse_failed", error=str(exc))
+        return f"Workspace analyse failed: {exc}"
 
 
 def tool_spaces_list() -> str:

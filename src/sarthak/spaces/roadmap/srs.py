@@ -163,7 +163,16 @@ def _initial_interval(initial_grade: int) -> int:
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
+#
+# Connection pool: one persistent (conn, asyncio.Lock) per resolved db_path.
+# Eliminates the critical bug where _open() opened a fresh connection every
+# call and leaked it (callers never closed it — they used it as a ctx manager
+# but aiosqlite.Connection.__aexit__ does NOT close the connection).
 
+import asyncio as _asyncio
+
+_POOL: dict[str, tuple[aiosqlite.Connection, _asyncio.Lock]] = {}
+_POOL_LOCK = _asyncio.Lock()
 _INIT_DONE: set[str] = set()
 
 
@@ -190,25 +199,33 @@ async def _migrate_quicktest_srs(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
-async def _open(db_path: str) -> aiosqlite.Connection:
-    """Open (and initialise once) a SRS database connection.
+async def _get_conn(db_path: str) -> tuple[aiosqlite.Connection, _asyncio.Lock]:
+    """Return the persistent (conn, write-lock) for db_path. Creates it on first call."""
+    from pathlib import Path
+    norm_path = str(Path(db_path).resolve())
 
-    Callers MUST use this as an async context manager::
+    async with _POOL_LOCK:
+        if norm_path not in _POOL:
+            conn = await aiosqlite.connect(norm_path)
+            conn.row_factory = aiosqlite.Row
+            _POOL[norm_path] = (conn, _asyncio.Lock())
 
-        async with await _open(db_path) as db:
-            ...
-    """
-    db = await aiosqlite.connect(db_path)
-    db.row_factory = aiosqlite.Row
-    if db_path not in _INIT_DONE:
-        try:
-            await _ensure_schema(db)
-            await _migrate_quicktest_srs(db)
-            _INIT_DONE.add(db_path)
-        except Exception:
-            await db.close()
-            raise
-    return db
+    conn, lock = _POOL[norm_path]
+
+    if norm_path not in _INIT_DONE:
+        async with lock:
+            if norm_path not in _INIT_DONE:
+                try:
+                    await _ensure_schema(conn)
+                    await _migrate_quicktest_srs(conn)
+                    _INIT_DONE.add(norm_path)
+                except Exception:
+                    # Remove broken entry so next call retries
+                    async with _POOL_LOCK:
+                        _POOL.pop(norm_path, None)
+                    raise
+
+    return conn, lock
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -216,21 +233,21 @@ async def _open(db_path: str) -> aiosqlite.Connection:
 async def get_due(db_path: str) -> list[SRSCard]:
     """Return all cards due today or overdue, ordered by urgency."""
     today = str(date.today())
-    async with await _open(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM srs_cards WHERE next_due <= ? ORDER BY next_due, repetitions",
-            (today,),
-        ) as cur:
-            rows = await cur.fetchall()
+    db, _ = await _get_conn(db_path)
+    async with db.execute(
+        "SELECT * FROM srs_cards WHERE next_due <= ? ORDER BY next_due, repetitions",
+        (today,),
+    ) as cur:
+        rows = await cur.fetchall()
     return [SRSCard(**dict(r)) for r in rows]
 
 
 async def card_status(db_path: str, card_id: str) -> SRSCard | None:
-    async with await _open(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM srs_cards WHERE card_id=?", (card_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    db, _ = await _get_conn(db_path)
+    async with db.execute(
+        "SELECT * FROM srs_cards WHERE card_id=?", (card_id,)
+    ) as cur:
+        row = await cur.fetchone()
     return SRSCard(**dict(row)) if row else None
 
 
@@ -239,7 +256,8 @@ async def record_review(db_path: str, card_id: str, grade: int) -> SRSCard:
     existing = await card_status(db_path, card_id)
     card     = existing or SRSCard(card_id=card_id)
     updated  = _sm2(card, grade)
-    async with await _open(db_path) as db:
+    db, lock = await _get_conn(db_path)
+    async with lock:
         await db.execute(
             """INSERT INTO srs_cards
                  (card_id, card_type, concept, reason,
@@ -308,7 +326,8 @@ async def upsert_card(
             next_due=next_due,
         )
 
-    async with await _open(db_path) as db:
+    db, lock = await _get_conn(db_path)
+    async with lock:
         await db.execute(
             """INSERT INTO srs_cards
                  (card_id, card_type, concept, reason,
@@ -470,11 +489,11 @@ async def srs_status(db_path: str, qt_id: str) -> SRSCard | None:
     if card:
         return card
     # Check old quicktest_srs table
-    async with await _open(db_path) as db:
-        async with db.execute(
-            "SELECT * FROM quicktest_srs WHERE qt_id=?", (qt_id,)
-        ) as cur:
-            row = await cur.fetchone()
+    db, _ = await _get_conn(db_path)
+    async with db.execute(
+        "SELECT * FROM quicktest_srs WHERE qt_id=?", (qt_id,)
+    ) as cur:
+        row = await cur.fetchone()
     if row:
         d = dict(row)
         return SRSCard(card_id=d["qt_id"], card_type="quicktest", concept=d["qt_id"], **d)

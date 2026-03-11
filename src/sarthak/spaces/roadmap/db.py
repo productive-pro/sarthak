@@ -7,6 +7,7 @@ Audio/video blobs: .spaces/<n>/media/<id>.<ext> (path stored in DB)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,86 +93,123 @@ def _media_dir(space_dir: Path) -> Path:
 
 
 # Track which DB paths have been fully initialised in this process.
-_INIT_DONE: set[Path] = set()
+# Keys are normalised (resolved) path strings.
+_INIT_DONE: set[str] = set()
+# Per-DB connection pool: normalised path → (conn, asyncio.Lock)
+_CONN_POOL: dict[str, tuple[aiosqlite.Connection, asyncio.Lock]] = {}
+_POOL_LOCK = asyncio.Lock()
 
 
 class RoadmapDB:
-    """Async SQLite wrapper. One instance per space directory."""
+    """Async SQLite wrapper. One persistent connection per space directory."""
 
     def __init__(self, space_dir: Path) -> None:
         self._path = _db_path(space_dir)
+        self._key = str(self._path.resolve())
         self._space_dir = space_dir
+        self._init_lock = asyncio.Lock()
+
+    async def _ensure_conn(self) -> tuple[aiosqlite.Connection, asyncio.Lock]:
+        """Create connection + write lock if missing, without running init()."""
+        async with _POOL_LOCK:
+            if self._key not in _CONN_POOL:
+                conn = await aiosqlite.connect(self._key)
+                conn.row_factory = aiosqlite.Row
+                _CONN_POOL[self._key] = (conn, asyncio.Lock())
+        return _CONN_POOL[self._key]
+
+    async def _conn(self) -> aiosqlite.Connection:
+        """Return the persistent, initialised connection for this space DB."""
+        conn, _ = await self._ensure_conn()
+        # Auto-init: ensure schema is applied before any read
+        await self.init()
+        return conn
+
+    async def _wconn(self) -> tuple[aiosqlite.Connection, asyncio.Lock]:
+        """Return (conn, write-lock) for write operations. Auto-inits schema."""
+        conn, lock = await self._ensure_conn()
+        await self.init()
+        return conn, lock
 
     async def init(self) -> None:
-        if self._path in _INIT_DONE:
+        if self._key in _INIT_DONE:
             return
-        async with aiosqlite.connect(self._path) as db:
-            await db.executescript(_SCHEMA)
-            await db.commit()
-        # Safe migrations
-        for stmt in [
-            "ALTER TABLE notes ADD COLUMN type TEXT NOT NULL DEFAULT 'note'",
-        ]:
-            try:
-                async with aiosqlite.connect(self._path) as db:
-                    await db.execute(stmt)
-                    await db.commit()
-            except aiosqlite.OperationalError:
-                pass
-        # Migrate digest_cache from old id=1 single-row schema
-        async with aiosqlite.connect(self._path) as db:
-            async with db.execute("PRAGMA table_info(digest_cache)") as cur:
-                cols = {row[1] async for row in cur}
-        if "id" in cols:
-            async with aiosqlite.connect(self._path) as db:
-                await db.executescript("""
-                    CREATE TABLE IF NOT EXISTS digest_cache_new (
-                        space TEXT NOT NULL DEFAULT '',
-                        date  TEXT NOT NULL,
-                        body  TEXT NOT NULL,
-                        PRIMARY KEY (space, date)
-                    );
-                    INSERT OR IGNORE INTO digest_cache_new(space, date, body)
-                        SELECT space, date, body FROM digest_cache;
-                    DROP TABLE digest_cache;
-                    ALTER TABLE digest_cache_new RENAME TO digest_cache;
-                """)
-                await db.commit()
-        _INIT_DONE.add(self._path)
+        async with self._init_lock:
+            if self._key in _INIT_DONE:
+                return
+            conn, lock = await self._ensure_conn()
+            async with lock:
+                if self._key in _INIT_DONE:
+                    return
+                await conn.executescript(_SCHEMA)
+                await conn.commit()
+                # Safe migrations
+                for stmt in [
+                    "ALTER TABLE notes ADD COLUMN type TEXT NOT NULL DEFAULT 'note'",
+                ]:
+                    try:
+                        await conn.execute(stmt)
+                        await conn.commit()
+                    except aiosqlite.OperationalError:
+                        pass
+                # Migrate digest_cache from old id=1 single-row schema
+                async with conn.execute("PRAGMA table_info(digest_cache)") as cur:
+                    cols = {row[1] async for row in cur}
+                if "id" in cols:
+                    await conn.executescript("""
+                        CREATE TABLE IF NOT EXISTS digest_cache_new (
+                            space TEXT NOT NULL DEFAULT '',
+                            date  TEXT NOT NULL,
+                            body  TEXT NOT NULL,
+                            PRIMARY KEY (space, date)
+                        );
+                        INSERT OR IGNORE INTO digest_cache_new(space, date, body)
+                            SELECT space, date, body FROM digest_cache;
+                        DROP TABLE digest_cache;
+                        ALTER TABLE digest_cache_new RENAME TO digest_cache;
+                    """)
+                    await conn.commit()
+                _INIT_DONE.add(self._key)
+
+    def _space_key(self) -> str:
+        """Stable, collision-free key for this space in digest_cache."""
+        return str(self._space_dir.resolve())
 
     # ── Digest cache ──────────────────────────────────────────────────────────
 
     async def load_digest(self, date: str) -> str | None:
-        async with aiosqlite.connect(self._path) as db:
-            async with db.execute(
-                "SELECT body FROM digest_cache WHERE space=? AND date=?",
-                (str(self._space_dir.name), date),
-            ) as cur:
-                row = await cur.fetchone()
+        db = await self._conn()
+        async with db.execute(
+            "SELECT body FROM digest_cache WHERE space=? AND date=?",
+            (self._space_key(), date),
+        ) as cur:
+            row = await cur.fetchone()
         return row[0] if row else None
 
     async def save_digest(self, date: str, body: str) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        db, lock = await self._wconn()
+        async with lock:
             await db.execute(
                 "INSERT INTO digest_cache(space,date,body) VALUES(?,?,?) "
                 "ON CONFLICT(space,date) DO UPDATE SET body=excluded.body",
-                (str(self._space_dir.name), date, body),
+                (self._space_key(), date, body),
             )
             await db.commit()
 
     # ── Roadmap blob ──────────────────────────────────────────────────────────
 
     async def load_roadmap(self) -> Roadmap | None:
-        async with aiosqlite.connect(self._path) as db:
-            async with db.execute("SELECT blob FROM roadmap WHERE id=1") as cur:
-                row = await cur.fetchone()
+        db = await self._conn()
+        async with db.execute("SELECT blob FROM roadmap WHERE id=1") as cur:
+            row = await cur.fetchone()
         if row is None:
             return None
         return Roadmap.model_validate_json(row[0]).sorted_by_order()
 
     async def save_roadmap(self, roadmap: Roadmap) -> None:
         blob = roadmap.model_dump_json()
-        async with aiosqlite.connect(self._path) as db:
+        db, lock = await self._wconn()
+        async with lock:
             await db.execute(
                 "INSERT INTO roadmap(id,blob,updated) VALUES(1,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET blob=excluded.blob, updated=excluded.updated",
@@ -193,7 +231,8 @@ class RoadmapDB:
 
     async def create_note(self, note: NoteRow) -> NoteRow:
         note.created_at = note.created_at or _now()
-        async with aiosqlite.connect(self._path) as db:
+        db, lock = await self._wconn()
+        async with lock:
             await db.execute(
                 "INSERT INTO notes(id,chapter_id,topic_id,concept_id,title,body_md,type,audio_path,video_path,created_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -221,7 +260,8 @@ class RoadmapDB:
         if not sets:
             return await self.get_note(note_id)
         params.append(note_id)
-        async with aiosqlite.connect(self._path) as db:
+        db, lock = await self._wconn()
+        async with lock:
             await db.execute(
                 f"UPDATE notes SET {', '.join(sets)} WHERE id=?",
                 params,
@@ -230,7 +270,8 @@ class RoadmapDB:
         return await self.get_note(note_id)
 
     async def delete_note(self, note_id: str) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        db, lock = await self._wconn()
+        async with lock:
             await db.execute("DELETE FROM notes WHERE id=?", (note_id,))
             await db.commit()
 
@@ -239,83 +280,45 @@ class RoadmapDB:
         concept_id: str = "",
         note_type: str = "",
     ) -> list[NoteRow]:
-        """List notes filtered by type. Pass note_type='' (default) to get all types."""
-        async with aiosqlite.connect(self._path) as db:
-            db.row_factory = aiosqlite.Row
-            if note_type and concept_id:
-                async with db.execute(
-                    "SELECT * FROM notes WHERE concept_id=? AND type=? ORDER BY created_at DESC",
-                    (concept_id, note_type),
-                ) as cur:
-                    rows = await cur.fetchall()
-            elif note_type:
-                async with db.execute(
-                    "SELECT * FROM notes WHERE type=? ORDER BY created_at DESC",
-                    (note_type,),
-                ) as cur:
-                    rows = await cur.fetchall()
-            elif concept_id:
-                async with db.execute(
-                    "SELECT * FROM notes WHERE concept_id=? ORDER BY created_at DESC",
-                    (concept_id,),
-                ) as cur:
-                    rows = await cur.fetchall()
-            else:
-                async with db.execute(
-                    "SELECT * FROM notes ORDER BY created_at DESC"
-                ) as cur:
-                    rows = await cur.fetchall()
-        return [NoteRow(**dict(r)) for r in rows]
-
-    async def list_notes_by_type(self, note_type: str, concept_id: str = "") -> list[NoteRow]:
-        """List notes of a specific type (audio/video), optionally filtered by concept."""
-        async with aiosqlite.connect(self._path) as db:
-            db.row_factory = aiosqlite.Row
-            if concept_id:
-                async with db.execute(
-                    "SELECT * FROM notes WHERE type=? AND concept_id=? ORDER BY created_at DESC",
-                    (note_type, concept_id),
-                ) as cur:
-                    rows = await cur.fetchall()
-            else:
-                async with db.execute(
-                    "SELECT * FROM notes WHERE type=? ORDER BY created_at DESC",
-                    (note_type,),
-                ) as cur:
-                    rows = await cur.fetchall()
+        db = await self._conn()
+        clauses, params = [], []
+        if concept_id:
+            clauses.append("concept_id=?")
+            params.append(concept_id)
+        if note_type:
+            clauses.append("type=?")
+            params.append(note_type)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        async with db.execute(
+            f"SELECT * FROM notes {where} ORDER BY created_at DESC", params
+        ) as cur:
+            rows = await cur.fetchall()
         return [NoteRow(**dict(r)) for r in rows]
 
     async def get_note(self, note_id: str) -> NoteRow | None:
-        async with aiosqlite.connect(self._path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM notes WHERE id=?", (note_id,)) as cur:
-                row = await cur.fetchone()
-        if not row:
-            return None
-        return NoteRow(**dict(row))
+        db = await self._conn()
+        async with db.execute("SELECT * FROM notes WHERE id=?", (note_id,)) as cur:
+            row = await cur.fetchone()
+        return NoteRow(**dict(row)) if row else None
 
     async def list_all_media_notes(self, concept_id: str = "") -> list[NoteRow]:
-        """List all audio + video notes in one query."""
-        async with aiosqlite.connect(self._path) as db:
-            db.row_factory = aiosqlite.Row
-            if concept_id:
-                async with db.execute(
-                    "SELECT * FROM notes WHERE type IN ('audio','video') AND concept_id=? ORDER BY created_at DESC",
-                    (concept_id,),
-                ) as cur:
-                    rows = await cur.fetchall()
-            else:
-                async with db.execute(
-                    "SELECT * FROM notes WHERE type IN ('audio','video') ORDER BY created_at DESC"
-                ) as cur:
-                    rows = await cur.fetchall()
+        db = await self._conn()
+        sql = "SELECT * FROM notes WHERE type IN ('audio','video')"
+        params: list = []
+        if concept_id:
+            sql += " AND concept_id=?"
+            params.append(concept_id)
+        sql += " ORDER BY created_at DESC"
+        async with db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
         return [NoteRow(**dict(r)) for r in rows]
 
     # ── QuickTests ─────────────────────────────────────────────────────────────
 
     async def create_quicktest(self, qt: QuickTestRow) -> QuickTestRow:
         qt.created_at = qt.created_at or _now()
-        async with aiosqlite.connect(self._path) as db:
+        db, lock = await self._wconn()
+        async with lock:
             await db.execute(
                 "INSERT INTO quicktests(id,chapter_id,topic_id,concept_id,prompt,response_md,input_mode,created_at) "
                 "VALUES(?,?,?,?,?,?,?,?)",
@@ -326,26 +329,23 @@ class RoadmapDB:
         return qt
 
     async def list_quicktests(self, concept_id: str = "") -> list[QuickTestRow]:
-        async with aiosqlite.connect(self._path) as db:
-            db.row_factory = aiosqlite.Row
-            if concept_id:
-                async with db.execute(
-                    "SELECT * FROM quicktests WHERE concept_id=? ORDER BY created_at DESC",
-                    (concept_id,),
-                ) as cur:
-                    rows = await cur.fetchall()
-            else:
-                async with db.execute(
-                    "SELECT * FROM quicktests ORDER BY created_at DESC"
-                ) as cur:
-                    rows = await cur.fetchall()
+        db = await self._conn()
+        sql = "SELECT * FROM quicktests"
+        params: list = []
+        if concept_id:
+            sql += " WHERE concept_id=?"
+            params.append(concept_id)
+        sql += " ORDER BY created_at DESC"
+        async with db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
         return [QuickTestRow(**dict(r)) for r in rows]
 
     # ── Files ─────────────────────────────────────────────────────────────────
 
     async def upsert_file(self, fl: FileLink) -> FileLink:
         linked_json = json.dumps([lt.model_dump() for lt in fl.linked_to])
-        async with aiosqlite.connect(self._path) as db:
+        db, lock = await self._wconn()
+        async with lock:
             await db.execute(
                 "INSERT INTO files(id,path,linked_to) VALUES(?,?,?) "
                 "ON CONFLICT(path) DO UPDATE SET linked_to=excluded.linked_to, id=files.id",
@@ -355,10 +355,9 @@ class RoadmapDB:
         return fl
 
     async def list_files(self) -> list[FileLink]:
-        async with aiosqlite.connect(self._path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT * FROM files ORDER BY path") as cur:
-                rows = await cur.fetchall()
+        db = await self._conn()
+        async with db.execute("SELECT * FROM files ORDER BY path") as cur:
+            rows = await cur.fetchall()
         result = []
         for r in rows:
             lt = [LinkedTarget(**x) for x in json.loads(r["linked_to"])]

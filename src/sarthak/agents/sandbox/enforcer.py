@@ -51,10 +51,7 @@ async def enforce_sandbox(
     cfg = build_sandbox_config(spec)
 
     # [agents.sandbox.system/space] enabled = false bypasses enforcement (dev only)
-    from sarthak.agents.sandbox.config import _load_sandbox_cfg_overrides
-    is_space = spec.scope.value == "space"
-    overrides = _load_sandbox_cfg_overrides(is_space)
-    if str(overrides.get("enabled", "true")).lower() == "false":
+    if not cfg.enabled:
         log.warning("sandbox_disabled", agent_id=spec.agent_id, scope=spec.scope.value)
         return await execute_fn(spec, cfg)
 

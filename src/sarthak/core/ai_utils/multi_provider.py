@@ -414,6 +414,15 @@ _BUILDERS: dict[Provider, Callable[[ProviderConfig, str], Any]] = {
 }
 
 
+def register_provider(
+    provider: Provider | str,
+    builder: Callable[[ProviderConfig, str], Any],
+) -> None:
+    """Register or override a provider builder at runtime."""
+    resolved = provider if isinstance(provider, Provider) else Provider.from_str(provider)
+    _BUILDERS[resolved] = builder
+
+
 def build_model(provider: Provider, model_name: str, cfg: dict[str, Any]) -> Any:
     """Build a pydantic-ai model object for the given provider + model."""
     builder = _BUILDERS.get(provider)
@@ -533,14 +542,23 @@ def _get_cached_agent(provider_str: str, model_name: str, system: str | None, cf
     return Agent(**kwargs)
 
 
+_CFG_HASH_CACHE: tuple[int, int] | None = None  # (id(cfg), hash)
+
+
 def _cfg_hash(cfg: dict[str, Any]) -> int:
     """Stable hash of the AI section of config to detect key/model changes."""
     import json
+    global _CFG_HASH_CACHE
+    cfg_id = id(cfg)
+    if _CFG_HASH_CACHE and _CFG_HASH_CACHE[0] == cfg_id:
+        return _CFG_HASH_CACHE[1]
     ai_section = cfg.get("ai", {})
     try:
-        return hash(json.dumps(ai_section, sort_keys=True, default=str))
+        h = hash(json.dumps(ai_section, sort_keys=True, default=str))
     except Exception:
-        return 0
+        h = 0
+    _CFG_HASH_CACHE = (cfg_id, h)
+    return h
 
 
 def invalidate_agent_cache() -> None:

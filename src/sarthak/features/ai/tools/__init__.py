@@ -33,6 +33,8 @@ from sarthak.features.ai.tools.spaces import (
     tool_spaces_list,
     tool_spaces_rag_index,
     tool_spaces_rag_search,
+    tool_workspace_qa,
+    tool_workspace_analyse,
 )
 
 __all__ = [
@@ -49,4 +51,5 @@ __all__ = [
     "tool_spaces_evaluate", "tool_spaces_init", "tool_spaces_context",
     "tool_spaces_quick", "tool_spaces_list",
     "tool_spaces_rag_index", "tool_spaces_rag_search",
+    "tool_workspace_qa", "tool_workspace_analyse",
 ]

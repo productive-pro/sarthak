@@ -67,6 +67,9 @@ class SandboxConfig:
     # Rate limits
     max_web_calls: int = WEB_SEARCH_RATE
 
+    # Global enable/disable (dev only)
+    enabled: bool = True
+
     # Windows: resource module unavailable; skip rlimit enforcement
     rlimits_available: bool = field(default_factory=lambda: sys.platform != "win32")
 
@@ -142,6 +145,7 @@ def build_sandbox_config(spec: "AgentSpec") -> SandboxConfig:
         cpu_seconds   =policy.cpu_seconds    if policy.cpu_seconds    is not None else int(cfg_overrides.get("cpu_seconds",   _CPU_SECONDS)),
         output_cap    =policy.output_cap     if policy.output_cap     is not None else int(cfg_overrides.get("output_cap",    OUTPUT_CAP)),
         max_web_calls =policy.max_web_calls  if policy.max_web_calls  is not None else int(cfg_overrides.get("max_web_calls", WEB_SEARCH_RATE)),
+        enabled       =str(cfg_overrides.get("enabled", "true")).lower() != "false",
     )
 
 

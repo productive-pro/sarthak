@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
-import { api, fmt } from '../api';
+import { useState } from 'react';
+import { api } from '../api';
+import { fmt } from '../utils/format';
 import { useStore } from '../store';
 import Modal from '../components/Modal';
+import { Spinner } from '../components/ui';
+import useFetch from '../hooks/useFetch';
 
 export default function Agents() {
-  const [agents, setAgents]   = useState([]);
-  const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [desc, setDesc]     = useState('');
   const [tg, setTg]         = useState(false);
@@ -13,27 +14,22 @@ export default function Agents() {
   const [runModal, setRunModal]   = useState(null);
   const { ok, err } = useStore();
 
-  useEffect(() => { load(); }, []);
-
-  const load = async () => {
-    setLoading(true);
-    try { setAgents(await api('/agents')); }
-    catch (e) { err(e.message); }
-    setLoading(false);
-  };
+  const { data: agents = [], loading, reload } = useFetch('/agents', [], {
+    initialData: [],
+  });
 
   const create = async () => {
     if (!desc.trim()) { err('Describe what the agent should do'); return; }
     try {
       await api('/agents', { method: 'POST', body: JSON.stringify({ description: desc, notify_telegram: tg }) });
-      ok('Agent created'); setShowCreate(false); setDesc(''); setTg(false); load();
+      ok('Agent created'); setShowCreate(false); setDesc(''); setTg(false); reload();
     } catch (e) { err(e.message); }
   };
 
   const toggleAgent = async (id, enabled) => {
     try {
       await api(`/agents/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled: !enabled }) });
-      ok(enabled ? 'Agent paused' : 'Agent enabled'); load();
+      ok(enabled ? 'Agent paused' : 'Agent enabled'); reload();
     } catch (e) { err(e.message); }
   };
 
@@ -41,7 +37,8 @@ export default function Agents() {
     setRunModal({ loading: true, output: '' });
     try {
       const r = await api(`/agents/${id}/run`, { method: 'POST' });
-      setRunModal({ loading: false, output: r.output || r.result || JSON.stringify(r, null, 2) });
+      const out = typeof r === 'string' ? r : (r?.output || r?.result || JSON.stringify(r, null, 2));
+      setRunModal({ loading: false, output: out });
     } catch (e) { setRunModal({ loading: false, output: e.message }); }
   };
 
@@ -56,7 +53,7 @@ export default function Agents() {
 
   const deleteAgent = async (id) => {
     if (!confirm('Delete this agent?')) return;
-    try { await api(`/agents/${id}`, { method: 'DELETE' }); ok('Agent deleted'); load(); }
+    try { await api(`/agents/${id}`, { method: 'DELETE' }); ok('Agent deleted'); reload(); }
     catch (e) { err(e.message); }
   };
 
@@ -74,7 +71,7 @@ export default function Agents() {
 
       <div className="pg-body">
         {loading ? (
-          <div className="loading-center"><span className="spin" /></div>
+          <Spinner />
         ) : agents.length === 0 ? (
           <div className="empty">
             <div className="empty-ttl">No agents yet</div>
@@ -101,7 +98,7 @@ export default function Agents() {
       {showCreate && (
         <Modal title="Create Agent" onClose={() => setShowCreate(false)} footer={
           <>
-            <button className="btn btn-muted btn-sm" onClick={() => setShowCreate(false)}>Cancel</button>
+            <button className="btn btn-muted btn-sm" onClick={() => { setShowCreate(false); setDesc(''); setTg(false); }}>Cancel</button>
             <button className="btn btn-accent btn-sm" onClick={create}>Create Agent</button>
           </>
         }>
@@ -121,7 +118,7 @@ export default function Agents() {
       {logsModal && (
         <Modal title={`Logs — ${logsModal.title}`} onClose={() => setLogsModal(null)}>
           {logsModal.loading ? (
-            <div className="loading-center"><span className="spin" /></div>
+            <Spinner />
           ) : logsModal.error ? (
             <div style={{ color: 'var(--red)', fontSize: 13 }}>{logsModal.error}</div>
           ) : logsModal.logs.length === 0 ? (
@@ -152,7 +149,7 @@ export default function Agents() {
       {runModal && (
         <Modal title="Run Output" onClose={() => setRunModal(null)}>
           {runModal.loading
-            ? <div className="loading-center"><span className="spin" /></div>
+            ? <Spinner />
             : <pre className="code-block" style={{ maxHeight: 420, overflow: 'auto', margin: 0 }}>{runModal.output}</pre>}
         </Modal>
       )}

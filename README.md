@@ -7,7 +7,7 @@
 **Privacy-first AI learning companion and productivity intelligence platform.**  
 Local. Offline-capable. Built around how experts actually work and learn.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/sarthak)](https://pypi.org/project/sarthak/)
 [![Docs](https://img.shields.io/badge/docs-mkdocs-informational)](https://productive-pro.github.io/sarthak)
@@ -418,7 +418,9 @@ For bugs and feature requests, open an issue at [github.com/productive-pro/sarth
 
 ## License
 
-Sarthak is released under the [MIT License](LICENSE).
+Sarthak is released under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0).
+
+If you want to use Sarthak in a proprietary product or service without AGPL obligations, [contact us for a commercial license](mailto:hello@sarthak.ai).
 
 ---
 

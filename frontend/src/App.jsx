@@ -16,13 +16,18 @@ export default function App() {
   const { page, setPage } = useStore();
 
   useEffect(() => {
-    const syncFromHash = () => {
-      const hash = window.location.hash.replace('#', '').trim();
-      if (hash) setPage(hash, { push: false });
+    // Sync store to URL on initial load (replace so there's no extra history entry)
+    const hash = window.location.hash.replace('#', '').trim();
+    if (hash) setPage(hash, { replace: true });
+
+    // On browser back/forward, sync store WITHOUT pushing a new history entry
+    const onPopState = (e) => {
+      const h = window.location.hash.replace('#', '').trim();
+      const next = h || (e.state?.page) || 'dashboard';
+      setPage(next, { replace: true });
     };
-    window.addEventListener('popstate', syncFromHash);
-    syncFromHash();
-    return () => window.removeEventListener('popstate', syncFromHash);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, [setPage]);
 
   return (

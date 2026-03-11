@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
 
 from sarthak.agents.models import AgentScope, AgentSpec, AgentTool, SandboxPolicy
 from sarthak.agents.prompts.roadmap import CREATOR as _SYSTEM_PROMPT
+from sarthak.agents.store import compute_next_run
 from sarthak.features.ai.agents._base import run_llm, parse_json_response
 
 log = structlog.get_logger(__name__)
@@ -93,9 +93,5 @@ def _slugify(name: str) -> str:
     return slug or f"agent-{uuid.uuid4().hex[:6]}"
 
 
-def _next_run(schedule: str) -> str:
-    try:
-        from croniter import croniter
-        return croniter(schedule, datetime.now(timezone.utc)).get_next(datetime).isoformat()
-    except Exception:
-        return ""
+# compute_next_run imported from sarthak.agents.store — single canonical implementation
+_next_run = compute_next_run

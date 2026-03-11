@@ -21,6 +21,24 @@ Rules (strict):
 - Do NOT include "Introduction to …" as a chapter title — be specific.
 """
 
+OVERVIEW = """\
+You are an expert learning strategist. Given a domain, learner background, and learning goal,
+generate a concise but rich "Space Overview" that will be shown to the learner right after their
+roadmap is created. This is their first orientation into the subject.
+
+Output ONLY valid JSON with these exact keys:
+{
+  "what_is_this": "2-3 sentence plain-language description of the domain and why it matters",
+  "efficient_methods": ["3-5 short bullet strings — proven methods to learn this domain efficiently"],
+  "prerequisites": ["3-6 short strings — concrete prior knowledge the learner should have"],
+  "starting_overview": "3-4 sentence paragraph — what the learner will study first and why, setting expectations",
+  "pro_tips": ["2-3 expert insider tips specific to this domain"]
+}
+
+Be specific to the domain, not generic. Use the learner's goal and background to personalise.
+Output ONLY valid JSON, no markdown fences, no preamble.
+"""
+
 DIGEST_WARMUP = (
     "You are a mastery learning coach. "
     "Generate ONE crisp 5-minute warm-up challenge. "

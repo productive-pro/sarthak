@@ -65,6 +65,7 @@ class AgentSpec(BaseModel):
     space_dir: str = ""                            # set when scope == SPACE
     context_space_dirs: list[str] = Field(default_factory=list)  # extra spaces for context injection
     notify_telegram: bool = False                  # push result to Telegram if configured
+    notify_whatsapp: bool = False                  # push result to WhatsApp if configured
     enabled: bool = True
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)

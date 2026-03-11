@@ -41,7 +41,7 @@ async def _wait_for_network(
     stop: asyncio.Event | None = None,
 ) -> bool:
     """Probe TCP connectivity; return True when reachable, False on timeout/stop."""
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + timeout
     attempt = 0
     while True:
         if stop and stop.is_set():
@@ -58,7 +58,7 @@ async def _wait_for_network(
             return True
         except (OSError, asyncio.TimeoutError):
             attempt += 1
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return False
             wait = min(interval, remaining)
@@ -200,7 +200,7 @@ async def _run_web(cfg: dict[str, Any], stop: asyncio.Event) -> None:
 
     web_cfg = cfg.get("web", {})
     host = str(web_cfg.get("host", "127.0.0.1"))
-    port = int(web_cfg.get("port", 7860))
+    port = int(web_cfg.get("port", 4848))
 
     # Free port using cross-platform psutil helper
     _free_port_cross_platform(port)
@@ -302,7 +302,17 @@ def main() -> None:
     enable_file_logging(get_orchestration_log_path())
     setup_logging(cfg)
     log.info("orchestrator_starting")
-    asyncio.run(_supervise(cfg))
+    try:
+        asyncio.run(_supervise(cfg))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Ignore further SIGINT during interpreter/thread cleanup so that a
+        # second Ctrl-C while Python joins residual threads (e.g. uvicorn's
+        # thread pool) does not produce the noisy "Exception ignored in
+        # threading._shutdown" traceback.
+        if not _IS_WINDOWS:
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 if __name__ == "__main__":

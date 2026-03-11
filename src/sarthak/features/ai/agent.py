@@ -16,7 +16,6 @@ Public surface
 """
 from __future__ import annotations
 
-from collections import OrderedDict
 
 # Re-export the single entry point
 from sarthak.features.ai.agents import get_agent  # noqa: F401
@@ -52,9 +51,6 @@ log = get_logger(__name__)
 # Expose agent caches so Telegram bot can invalidate on model change
 from sarthak.features.ai.agents import _caches  # noqa: F401
 
-# ── LRU cache for analyze_activity ────────────────────────────────────────────
-_INSIGHTS_CACHE: OrderedDict[str, ActivityInsights] = OrderedDict()
-_INSIGHTS_CACHE_MAX = 8
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────
@@ -90,7 +86,7 @@ async def analyse_snapshot(
 ) -> SarthakResult:
     """Run snapshot analysis agent on a PNG screenshot."""
     from pydantic_ai import BinaryContent
-    from sarthak.core.ai_utils.prompt_logger import log_prompt
+    from sarthak.core.ai_utils.prompt_logger import log_llm_call
     from sarthak.features.ai.agents._base import record_alert
 
     agent = get_agent("vision", provider=provider, model_name=model_name)
@@ -99,12 +95,13 @@ async def analyse_snapshot(
         active_app=active_app, context_block=ctx_block
     )
     log.debug("snapshot_agent_run", app=active_app)
-    log_prompt("snapshot_analysis", prompt)
     try:
         result = await agent.run(
             [prompt, BinaryContent(data=png_bytes, media_type="image/png")], deps=deps
         )
-        return result.output
+        output: SarthakResult = result.output
+        log_llm_call(agent="vision", system="[vision]", prompt=prompt, response=output.summary)
+        return output
     except Exception as exc:
         log.error("snapshot_agent_failed", error=str(exc))
         await record_alert(deps.pool, "error", "llm.snapshot", str(exc))
@@ -122,7 +119,7 @@ async def generate_daily_summary(
     model_name: str | None = None,
 ) -> SarthakResult:
     """Run the daily summary agent on an events context string."""
-    from sarthak.core.ai_utils.prompt_logger import log_prompt
+    from sarthak.core.ai_utils.prompt_logger import log_llm_call
     from sarthak.features.ai.agents._base import record_alert
 
     agent = get_agent("summary", provider=provider, model_name=model_name)
@@ -135,10 +132,11 @@ async def generate_daily_summary(
         date_str=date_str, prev_block=prev_block, context_snippet=context_snippet
     )
     log.debug("daily_summary_run", date=date_str, context_chars=len(context_snippet))
-    log_prompt("daily_summary", prompt)
     try:
         result = await agent.run(prompt, deps=deps)
-        return result.output
+        output: SarthakResult = result.output
+        log_llm_call(agent="summary", system="[summary]", prompt=prompt, response=output.summary)
+        return output
     except Exception as exc:
         log.error("daily_summary_failed", error=str(exc))
         await record_alert(deps.pool, "error", "llm.summary", str(exc), {"date": date_str})
@@ -185,33 +183,28 @@ async def analyze_activity(context_str: str) -> ActivityInsights:
     available for the TUI without blocking.
     """
     from hashlib import sha256
-    from sarthak.core.ai_utils.prompt_logger import log_prompt
+    from sarthak.core.ai_utils.prompt_logger import log_llm_call
+    from sarthak.storage.factory import cached
 
     key = sha256(context_str.encode("utf-8")).hexdigest()
-    if key in _INSIGHTS_CACHE:
-        _INSIGHTS_CACHE.move_to_end(key)
-        return _INSIGHTS_CACHE[key]
 
-    log_prompt("activity_insights", context_str)
-    agent = get_agent("activity_insights")
+    async def _compute() -> dict:
+        agent = get_agent("activity_insights")
+        result = await agent.run(context_str)
+        output: ActivityInsights = _agent_result_output(result)
+        log_llm_call(agent="activity_insights", system="[activity_insights]", prompt=context_str, response=str(output.model_dump()))
+        return output.model_dump()
 
-    async with agent.run_stream(context_str) as stream:
-        # Drain the stream; we only need the final structured output
-        async for _ in stream.stream_output(debounce_by=0.05):
-            pass
-        result = await stream.get_output()
+    data = await cached(f"activity_insights:{key}", _compute, ttl=300)
+    return ActivityInsights.model_validate(data)
 
-    # BUG-03 fix: use .output directly — pydantic-ai current API.
-    # _agent_result_output raises a clear AttributeError instead of silently
-    # returning None when the API changes.
-    output: ActivityInsights = _agent_result_output(result)
 
-    _INSIGHTS_CACHE[key] = output
-    _INSIGHTS_CACHE.move_to_end(key)
-    if len(_INSIGHTS_CACHE) > _INSIGHTS_CACHE_MAX:
-        _INSIGHTS_CACHE.popitem(last=False)
-
-    return output
+def _is_spaces_action(action_taken: str | None) -> bool:
+    """True if the orchestrator did something learning-related worth remembering."""
+    if not action_taken:
+        return False
+    prefixes = ("Taught:", "Evaluated:", "QuickTest:", "Session", "spaces")
+    return any(action_taken.startswith(p) or p in action_taken for p in prefixes)
 
 
 async def ask_orchestrator(
@@ -239,29 +232,30 @@ async def ask_orchestrator(
     )
     history = message_history or []
 
-    log.info(
-        "agent_prompt",
-        agent="orchestrator",
-        provider=resolved_provider,
-        model=resolved_model,
-        prompt_len=len(question),
-        # Only log full prompt for local/privacy-safe providers
-        **({"prompt": question} if resolved_provider == "ollama" else {}),
-    )
-
     try:
         result = await agent.run(question, deps=deps, message_history=history)
         output: OrchestratorResult = result.output
-
-        log.info(
-            "agent_response",
+        from sarthak.core.ai_utils.prompt_logger import log_llm_call
+        log_llm_call(
             agent="orchestrator",
-            provider=resolved_provider,
-            model=resolved_model,
-            action=output.action_taken,
-            response_len=len(output.reply or ""),
-            **({"response": output.reply} if resolved_provider == "ollama" else {}),
+            system=f"provider={resolved_provider} model={resolved_model}",
+            prompt=question,
+            response=output.reply or "",
         )
+
+        # Fire-and-forget: extract behavioural pattern if this was a spaces learning exchange
+        if cwd and output.reply and _is_spaces_action(output.action_taken):
+            import asyncio as _aio
+            from pathlib import Path as _Path
+            from sarthak.spaces.store import load_profile as _load_profile
+            from sarthak.spaces.memory import extract_memory_from_exchange as _extract
+            _space_dir = _Path(cwd)
+            _profile = _load_profile(_space_dir)
+            if _profile:
+                _aio.create_task(
+                    _extract(_space_dir, question, output.reply, _profile)
+                )
+
         return output
 
     except Exception as exc:

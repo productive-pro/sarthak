@@ -43,7 +43,7 @@ from sarthak.spaces.practice import PracticeEngine
 from sarthak.spaces.roadmap_tracker import record_session_to_roadmap
 from sarthak.spaces.session_tracker import SpaceSessionTracker, save_session
 from sarthak.spaces.store import init_space_profile, load_profile, save_profile
-from sarthak.spaces.sub_agents import (
+from sarthak.spaces.agents import (
     AssessmentAgent,
     BadgeAgent,
     CurriculumAgent,
@@ -72,7 +72,7 @@ class SpacesOrchestrator:
 
     def __init__(self, workspace_dir: str | Path):
         self.workspace_dir = Path(workspace_dir).resolve()
-        # Instantiate agents once — they're all stateless
+        # Stateless agents — one instance per orchestrator
         self._env           = EnvironmentAgent()
         self._onboarding    = OnboardingAgent()
         self._curriculum    = CurriculumAgent()
@@ -88,7 +88,6 @@ class SpacesOrchestrator:
         self._ext_tools     = ExternalToolsAgent()
         self._practice      = PracticeEngine()
         self._optimizer     = SignalOptimizer()
-        # Active session tracker (one at a time per orchestrator instance)
         self._tracker: SpaceSessionTracker | None = None
 
     # ── Profile helpers ────────────────────────────────────────────────────────
@@ -109,6 +108,198 @@ class SpacesOrchestrator:
             profile=profile,
             platform=detect_platform(),
         )
+
+    async def _prepare_profile(self, space_type: SpaceType | None) -> tuple[SpaceProfile, SpaceContext]:
+        profile = self._load_or_init(space_type)
+        profile = await self._maybe_onboard(profile)
+        profile = update_streak(profile)
+        ctx = self._build_ctx(profile)
+        return profile, ctx
+
+    async def _maybe_setup_workspace(
+        self,
+        profile: SpaceProfile,
+        ctx: SpaceContext,
+        reshape_workspace: bool,
+    ) -> tuple[SpaceProfile, SpaceContext, list[str], list[str]]:
+        workspace_changes: list[str] = []
+        tools_added: list[str] = []
+        if reshape_workspace or not profile.expert_tools_installed:
+            ws_design, env_scan = await asyncio.gather(
+                self._workspace.design(ctx),
+                self._env.scan(ctx),
+            )
+            workspace_changes = await self._workspace.apply(ws_design, self.workspace_dir)
+            profile.expert_tools_installed = env_scan.get("installed", [])
+            tools_added = [t["name"] for t in env_scan.get("missing", [])]
+            self._save(profile)
+            ctx = self._build_ctx(profile)
+        return profile, ctx, workspace_changes, tools_added
+
+    async def _plan_session(
+        self,
+        profile: SpaceProfile,
+        ctx: SpaceContext,
+        lc,
+        activity_prompt: str,
+        concept_override: str | None,
+    ) -> tuple[dict, str, str, bool, list[str]]:
+        review_due = lc.srs_due_by_evidence[:2] or self._srs.get_due_reviews(profile)
+        available = get_next_concepts(
+            profile.space_type,
+            profile.learner.mastered_concepts,
+            profile.learner.skill_level,
+        )
+        curriculum = await self._curriculum.plan(ctx, available, review_due, activity_context=activity_prompt)
+        next_concept = (
+            concept_override
+            or curriculum.get("next_concept")
+            or (available[0] if available else "Python basics")
+        )
+        session_type = curriculum.get("session_type", "new_concept")
+        suggest_project = curriculum.get("suggest_project", False)
+        return curriculum, next_concept, session_type, suggest_project, review_due
+
+    async def _build_math_task(
+        self,
+        profile: SpaceProfile,
+        ctx: SpaceContext,
+        next_concept: str,
+    ) -> tuple[dict, LearningTask]:
+        math_data, task = await asyncio.gather(
+            self._math.explain(
+                next_concept,
+                profile.learner.skill_level,
+                profile.learner.background,
+                is_technical=profile.learner.is_technical,
+            ),
+            self._task.build(next_concept, ctx, {}),
+        )
+        task.math_foundation = math_data.get("numpy_equivalent", task.math_foundation)
+        return math_data, task
+
+    def _build_content(
+        self,
+        profile: SpaceProfile,
+        curriculum: dict,
+        next_concept: str,
+        session_type: str,
+        suggest_project: bool,
+        math_data: dict,
+        task: LearningTask,
+    ) -> dict:
+        return {
+            "concept": next_concept,
+            "session_type": session_type,
+            "why_now": curriculum.get("why_now", ""),
+            "review_concept": curriculum.get("review_concept", ""),
+            "intuition": math_data.get("intuition", ""),
+            "key_formulas": math_data.get("key_formulas", []),
+            "derivation_steps": math_data.get("derivation_steps", []),
+            "numpy_equivalent": math_data.get("numpy_equivalent", ""),
+            "common_misconceptions": math_data.get("common_misconceptions", []),
+            "task": {
+                "title": task.title,
+                "real_world_hook": task.real_world_hook,
+                "instructions": task.instructions,
+                "starter_code": task.starter_code,
+                "no_code_version": task.no_code_version,
+                "expected_outcome": task.expected_outcome,
+                "hints": task.hints,
+                "bonus_challenge": task.bonus_challenge,
+                "estimated_minutes": task.estimated_minutes,
+            },
+            "learning_path": curriculum.get("learning_path", []),
+            "tools_to_use": profile.expert_tools_installed[:3],
+            "streak": profile.learner.streak_days,
+            "xp": profile.learner.xp,
+            "level": LEVEL_LABELS.get(profile.learner.skill_level, ""),
+            "suggest_project": suggest_project,
+        }
+
+    async def _render_reply(
+        self,
+        profile: SpaceProfile,
+        content: dict,
+        xp: int,
+    ) -> tuple[str, SpaceProfile]:
+        profile, leveled_up = award_xp(profile, xp)
+        if leveled_up:
+            content["level_up"] = LEVEL_LABELS.get(profile.learner.skill_level, "")
+        reply = await self._engage.render(
+            content,
+            profile.learner.background,
+            xp,
+            novel_approach=False,
+            is_technical=profile.learner.is_technical,
+        )
+        return reply, profile
+
+    async def _post_session(
+        self,
+        profile: SpaceProfile,
+        ctx: SpaceContext,
+        next_concept: str,
+        xp: int,
+        new_badges: list[str],
+        planned_minutes: int,
+        activity_prompt: str,
+    ) -> None:
+        ext_tools = self._ext_tools.detect_from_workspace(self.workspace_dir)
+
+        async def _analyse() -> None:
+            try:
+                optimal_content = await self._ws_analyser.analyse(ctx)
+                self._ws_analyser.write_optimal_learn(self.workspace_dir, optimal_content)
+            except Exception as exc:
+                log.warning("workspace_analyser_skipped", error=str(exc))
+
+        async def _record() -> None:
+            try:
+                await asyncio.to_thread(
+                    record_session_to_roadmap,
+                    self.workspace_dir, profile,
+                    concept=next_concept, xp_earned=xp,
+                    tools_used=profile.expert_tools_installed[:5],
+                    external_tools=ext_tools,
+                    mastered=False,
+                )
+            except Exception as exc:
+                log.warning("roadmap_record_skipped", error=str(exc))
+
+        async def _log_memory() -> None:
+            try:
+                from sarthak.spaces.memory import append_daily_log, sync_heartbeat_md
+                from sarthak.spaces.roadmap.srs import get_due
+                from sarthak.spaces.session_tracker import SpaceSession
+                from sarthak.spaces.models import SessionSignals, SelfReport as _SelfReport
+                _mem_session = SpaceSession(
+                    session_id="orch",
+                    space_dir=str(self.workspace_dir),
+                    concept=next_concept,
+                    started_at=datetime.now(timezone.utc),
+                    ended_at=datetime.now(timezone.utc),
+                    planned_minutes=planned_minutes,
+                    signals=SessionSignals(),
+                    self_report=_SelfReport(),
+                )
+                due_cards: list[str] = []
+                try:
+                    cards = await get_due(str(self.workspace_dir / ".spaces" / "sarthak.db"))
+                    due_cards = [c.concept for c in cards[:8]]
+                except Exception:
+                    pass
+                await asyncio.gather(
+                    append_daily_log(
+                        self.workspace_dir, _mem_session, profile,
+                        xp_earned=xp, badges_earned=new_badges,
+                    ),
+                    asyncio.to_thread(sync_heartbeat_md, self.workspace_dir, profile, due_cards),
+                )
+            except Exception as _me:
+                log.debug("memory_session_end_skipped", error=str(_me))
+
+        await asyncio.gather(_analyse(), _record(), _log_memory())
 
     # ── Onboarding (first session) ─────────────────────────────────────────────
 
@@ -152,49 +343,27 @@ class SpacesOrchestrator:
         track_session: bool = False,
     ) -> MasteryResult:
         """Full adaptive learning session. The main entry point."""
-        profile = self._load_or_init(space_type)
-        profile = await self._maybe_onboard(profile)
-        profile = update_streak(profile)
-        ctx = self._build_ctx(profile)
+        profile, ctx = await self._prepare_profile(space_type)
 
         # Pull real learner context (notes, tests, sessions)
         lc = await build_learner_context(self.workspace_dir, profile, days=14)
 
-        workspace_changes: list[str] = []
-        tools_added: list[str] = []
-
         # ── Step 1: Workspace setup (first run or explicit) ────────────────────
-        if reshape_workspace or not profile.expert_tools_installed:
-            ws_design, env_scan = await asyncio.gather(
-                self._workspace.design(ctx),
-                self._env.scan(ctx),
-            )
-            workspace_changes = await self._workspace.apply(ws_design, self.workspace_dir)
-            profile.expert_tools_installed = env_scan.get("installed", [])
-            tools_added = [t["name"] for t in env_scan.get("missing", [])]
-            self._save(profile)
-            ctx = self._build_ctx(profile)
+        profile, ctx, workspace_changes, tools_added = await self._maybe_setup_workspace(
+            profile, ctx, reshape_workspace
+        )
 
         # Inject real learner context into curriculum planning
         activity_prompt = learner_context_for_prompt(lc)
 
-        # ── Step 2: Spaced repetition — use evidence-based queue ───────────────
-        review_due = lc.srs_due_by_evidence[:2] or self._srs.get_due_reviews(profile)
-
-        # ── Step 3: Curriculum — what to learn next? ───────────────────────────
-        available = get_next_concepts(
-            profile.space_type,
-            profile.learner.mastered_concepts,
-            profile.learner.skill_level,
+        # ── Step 2: Spaced repetition + curriculum plan ────────────────────────
+        curriculum, next_concept, session_type, suggest_project, review_due = await self._plan_session(
+            profile,
+            ctx,
+            lc,
+            activity_prompt,
+            concept_override,
         )
-        curriculum = await self._curriculum.plan(ctx, available, review_due, activity_context=activity_prompt)
-        next_concept = (
-            concept_override
-            or curriculum.get("next_concept")
-            or (available[0] if available else "Python basics")
-        )
-        session_type = curriculum.get("session_type", "new_concept")
-        suggest_project = curriculum.get("suggest_project", False)
 
         # ── Start session tracker if requested ─────────────────────────────────
         if track_session:
@@ -204,61 +373,23 @@ class SpacesOrchestrator:
             )
             await self._tracker.start()
 
-        # ── Step 4: Math + Task in parallel ────────────────────────────────────
-        math_data, task = await asyncio.gather(
-            self._math.explain(
-                next_concept,
-                profile.learner.skill_level,
-                profile.learner.background,
-                is_technical=profile.learner.is_technical,
-            ),
-            self._task.build(next_concept, ctx, {}),
-        )
-        task.math_foundation = math_data.get("numpy_equivalent", task.math_foundation)
+        # ── Step 3: Math + Task in parallel ────────────────────────────────────
+        math_data, task = await self._build_math_task(profile, ctx, next_concept)
 
-        # ── Step 5: Build engagement content ───────────────────────────────────
-        content = {
-            "concept": next_concept,
-            "session_type": session_type,
-            "why_now": curriculum.get("why_now", ""),
-            "review_concept": curriculum.get("review_concept", ""),
-            "intuition": math_data.get("intuition", ""),
-            "key_formulas": math_data.get("key_formulas", []),
-            "derivation_steps": math_data.get("derivation_steps", []),
-            "numpy_equivalent": math_data.get("numpy_equivalent", ""),
-            "common_misconceptions": math_data.get("common_misconceptions", []),
-            "task": {
-                "title": task.title,
-                "real_world_hook": task.real_world_hook,
-                "instructions": task.instructions,
-                "starter_code": task.starter_code,
-                "no_code_version": task.no_code_version,
-                "expected_outcome": task.expected_outcome,
-                "hints": task.hints,
-                "bonus_challenge": task.bonus_challenge,
-                "estimated_minutes": task.estimated_minutes,
-            },
-            "learning_path": curriculum.get("learning_path", []),
-            "tools_to_use": profile.expert_tools_installed[:3],
-            "streak": profile.learner.streak_days,
-            "xp": profile.learner.xp,
-            "level": LEVEL_LABELS.get(profile.learner.skill_level, ""),
-            "suggest_project": suggest_project,
-        }
+        # ── Step 4: Build engagement content ───────────────────────────────────
+        content = self._build_content(
+            profile,
+            curriculum,
+            next_concept,
+            session_type,
+            suggest_project,
+            math_data,
+            task,
+        )
 
         # ── Step 6: Render engaging reply ──────────────────────────────────────
         xp = task.xp_reward
-        profile, leveled_up = award_xp(profile, xp)
-        if leveled_up:
-            content["level_up"] = LEVEL_LABELS.get(profile.learner.skill_level, "")
-
-        reply = await self._engage.render(
-            content,
-            profile.learner.background,
-            xp,
-            novel_approach=False,
-            is_technical=profile.learner.is_technical,
-        )
+        reply, profile = await self._render_reply(profile, content, xp)
 
         # ── Step 7: Badges ─────────────────────────────────────────────────────
         profile.learner.total_sessions += 1
@@ -268,29 +399,15 @@ class SpacesOrchestrator:
 
         # ── Steps 8+9: Workspace analysis + roadmap record + optimizer — parallel
         ctx = self._build_ctx(profile)
-        ext_tools = self._ext_tools.detect_from_workspace(self.workspace_dir)
-
-        async def _analyse() -> None:
-            try:
-                optimal_content = await self._ws_analyser.analyse(ctx)
-                self._ws_analyser.write_optimal_learn(self.workspace_dir, optimal_content)
-            except Exception as exc:
-                log.warning("workspace_analyser_skipped", error=str(exc))
-
-        async def _record() -> None:
-            try:
-                await asyncio.to_thread(
-                    record_session_to_roadmap,
-                    self.workspace_dir, profile,
-                    concept=next_concept, xp_earned=xp,
-                    tools_used=profile.expert_tools_installed[:5],
-                    external_tools=ext_tools,
-                    mastered=False,
-                )
-            except Exception as exc:
-                log.warning("roadmap_record_skipped", error=str(exc))
-
-        await asyncio.gather(_analyse(), _record())
+        await self._post_session(
+            profile,
+            ctx,
+            next_concept,
+            xp,
+            new_badges,
+            planned_minutes,
+            activity_prompt,
+        )
 
         # Store activity context on result for callers (e.g. recommendation agents)
         content["activity_context"] = activity_prompt

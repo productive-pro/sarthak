@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import Overlay from '../components/Overlay';
 import MarkdownEditor from '../components/MarkdownEditor';
 import ForceGraph from '../components/ForceGraph';
 import Modal from '../components/Modal';
-import { api, fmt } from '../api';
+import { api } from '../api';
+import { fmt } from '../utils/format';
 import { useStore } from '../store';
 import { useResizable } from '../hooks/useResizable';
 
@@ -37,7 +40,7 @@ export default function PanelHost({ panel, onClose, space, spaceId, spaceRoadmap
     <PracticeTestPanel space={space} spaceId={spaceId} onClose={onClose} refreshHero={refreshHero} />
   );
   if (name === 'optimizer') return (
-    <OptimizerPanel spaceId={spaceId} onClose={onClose} />
+    <InsightsPanel space={space} spaceId={spaceId} onClose={onClose} />
   );
   if (name === 'agents') return (
     <SpaceAgentsPanel space={space} spaceId={spaceId} onClose={onClose} />
@@ -61,7 +64,7 @@ function SpaceNotesPanel({ space, spaceId, onClose }) {
     (async () => {
       setLoading(true);
       try {
-        const r = await api(`/spaces/${spaceId}/notes?type=note`);
+        const r = await api(`/spaces/${spaceId}/notes?type=general`);
         if (!mounted) return;
         const list = Array.isArray(r) ? r : r.notes || [];
         setNotes(list);
@@ -201,14 +204,14 @@ function SpaceAgentsPanel({ space, spaceId, onClose }) {
   const [logsModal, setLogsModal] = useState(null);
   const { ok, err } = useStore();
 
-  useEffect(() => { load(); }, [spaceId]);
+  useEffect(() => { load(); }, [load]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     const r = await api(`/spaces/${spaceId}/agents`).catch(() => []);
     setAgents(Array.isArray(r) ? r : []);
     setLoading(false);
-  };
+  }, [spaceId]);
 
   const create = async () => {
     if (!desc.trim()) { err('Describe what the agent should do'); return; }
@@ -227,7 +230,8 @@ function SpaceAgentsPanel({ space, spaceId, onClose }) {
     setRunModal({ loading: true, output: '' });
     const r = await api(`/agents/${id}/run`, { method: 'POST' })
       .catch(e => ({ output: e.message }));
-    setRunModal({ loading: false, output: r.output || r.result || JSON.stringify(r, null, 2) });
+    const output = typeof r === 'string' ? r : (r.output || r.result || JSON.stringify(r, null, 2));
+    setRunModal({ loading: false, output });
   };
 
   const viewLogs = async (agent) => {
@@ -344,7 +348,10 @@ function TaskManagerPanel({ space, onClose }) {
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState('medium');
 
-  const save = (next) => { localStorage.setItem(key, JSON.stringify(next)); setTasks(next); };
+  const save = (next) => {
+    try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* quota exceeded — still update UI */ }
+    setTasks(next);
+  };
 
   const add = () => {
     if (!title.trim()) return;
@@ -432,7 +439,7 @@ function DigestPanel({ space, spaceId, onClose }) {
   const sendNow = async () => {
     setSending(true);
     try {
-      await api(`/spaces/${spaceId}/digest?send_telegram=true&refresh=false`);
+      await api(`/spaces/${spaceId}/digest?send_telegram=true`);
       ok('Digest sent to Telegram');
     } catch (e) { err(e.message); }
     setSending(false);
@@ -612,9 +619,8 @@ function FilesPanel({ space, spaceId, spaceRoadmap, onClose }) {
   useEffect(() => () => { sseRef.current?.abort?.(); }, []);
 
   // ── load workspace files ─────────────────────────────────────────
-  useEffect(() => { loadWalk(); }, [spaceId]);
-
-  const loadWalk = async () => {
+  // useCallback so loadWalk can be safely listed as a dep in doExportAndIndex / doIndex
+  const loadWalk = useCallback(async () => {
     setLoadingFiles(true);
     try {
       const r = await api(`/spaces/${spaceId}/rag/walk`);
@@ -629,7 +635,9 @@ function FilesPanel({ space, spaceId, spaceRoadmap, onClose }) {
       } catch {}
     }
     setLoadingFiles(false);
-  };
+  }, [spaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { loadWalk(); }, [loadWalk]);
 
   // ── selection helpers ────────────────────────────────────────────
   const visibleFiles = showIndexed ? allFiles.filter(f => f.indexed) : allFiles;
@@ -715,10 +723,11 @@ function FilesPanel({ space, spaceId, spaceRoadmap, onClose }) {
 
   // ── activity export then index ───────────────────────────────────
   const doExportAndIndex = async () => {
+    if (indexing) return;
     try {
       const r = await api(`/spaces/${spaceId}/rag/export-activities`, { method: 'POST' });
       if (r.paths?.length) {
-        // Index exported paths immediately
+        // Index exported paths immediately — reuse same SSE streaming as doIndex
         setIndexing(true);
         setIndexStatus({ file: '', file_index: 0, total_files: r.paths.length, chunks_so_far: 0, done: false });
         const res = await fetch(`/api/spaces/${spaceId}/rag/index-paths/stream`, {
@@ -1572,6 +1581,7 @@ function PracticeTestPanel({ space, spaceId, onClose, refreshHero }) {
   const [phase, setPhase] = useState('setup');
   const [test, setTest] = useState(null);
   const [currentIdx, setCurrentIdx] = useState(0);
+  const currentIdxRef = useRef(0);
   const [answers, setAnswers] = useState({});
   const [timeTaken, setTimeTaken] = useState({});
   const [remaining, setRemaining] = useState(0);
@@ -1589,6 +1599,8 @@ function PracticeTestPanel({ space, spaceId, onClose, refreshHero }) {
 
   const currentQ = test?.questions?.[currentIdx];
 
+  const nextQuestionRef = useRef(null);
+
   const startTimer = (seconds) => {
     clearInterval(timerRef.current);
     startRef.current = Date.now();
@@ -1599,7 +1611,7 @@ function PracticeTestPanel({ space, spaceId, onClose, refreshHero }) {
       if (rem <= 0) {
         clearInterval(timerRef.current);
         setRemaining(0);
-        nextQuestion(true);
+        nextQuestionRef.current?.(true);
       } else {
         setRemaining(rem);
       }
@@ -1625,6 +1637,7 @@ function PracticeTestPanel({ space, spaceId, onClose, refreshHero }) {
       });
       setTest(t);
       setPhase('test');
+      currentIdxRef.current = 0;
       setCurrentIdx(0);
       setAnswers({});
       setTimeTaken({});
@@ -1640,14 +1653,16 @@ function PracticeTestPanel({ space, spaceId, onClose, refreshHero }) {
   };
 
   const nextQuestion = async (timedOut = false) => {
+    const currentQ = test?.questions?.[currentIdxRef.current];
     if (!currentQ) return;
     if (timedOut) {
       setTimeTaken(tt => ({ ...tt, [currentQ.question_id]: currentQ.time_limit_seconds || secPerQ }));
     } else {
       recordTime(currentQ);
     }
-    if (currentIdx + 1 < test.questions.length) {
-      const nextIdx = currentIdx + 1;
+    if (currentIdxRef.current + 1 < test.questions.length) {
+      const nextIdx = currentIdxRef.current + 1;
+      currentIdxRef.current = nextIdx;
       setCurrentIdx(nextIdx);
       startTimer(test.questions[nextIdx]?.time_limit_seconds || secPerQ);
     } else {
@@ -1676,6 +1691,9 @@ function PracticeTestPanel({ space, spaceId, onClose, refreshHero }) {
   const selectOption = (qId, val) => setAnswers(a => ({ ...a, [qId]: val }));
 
   useEffect(() => () => clearInterval(timerRef.current), []);
+
+  // Keep ref in sync so timer callback always calls the latest nextQuestion
+  useEffect(() => { nextQuestionRef.current = nextQuestion; });
 
   return (
     <Overlay title="Practice Test" width="62%" height="88%" onClose={onClose} bodyStyle={{ padding: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -1833,52 +1851,201 @@ function PracticeTestPanel({ space, spaceId, onClose, refreshHero }) {
   );
 }
 
-function OptimizerPanel({ spaceId, onClose }) {
-  const [opts, setOpts] = useState([]);
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      try { const r = await api(`/spaces/${spaceId}/optimize?recent_n=10`); if (mounted) setOpts(r || []); } catch {}
-      setLoading(false);
-    })();
-    return () => { mounted = false; };
-  }, [spaceId]);
+// ── InsightsPanel — WorkspaceAnalyserAgent output + agent Q&A ────────────────
+function InsightsPanel({ space, spaceId, onClose }) {
+  const [tab, setTab] = useState('insights');
+  const [content, setContent] = useState(null);
+  const [recs, setRecs] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [chatHistory, setChatHistory] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
+  const { err } = useStore();
+
+  useEffect(() => { loadInsights(false); }, [spaceId]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory]);
+
+  const loadInsights = async (refresh = false) => {
+    if (refresh) setRefreshing(true); else setLoading(true);
+    try {
+      const r = await api(`/spaces/${spaceId}/workspace/insights${refresh ? '?refresh=true' : ''}`);
+      setContent(r.content || null);
+      setRecs(r.recommendations || null);
+    } catch (e) { err(e.message); }
+    setLoading(false);
+    setRefreshing(false);
+  };
+
+  const doChat = async () => {
+    const q = chatInput.trim();
+    if (!q || chatLoading) return;
+    setChatInput('');
+    setChatHistory(h => [...h, { role: 'user', content: q }]);
+    setChatLoading(true);
+    let accumulated = '';
+    const assistIdx = `ai_${Date.now()}`;
+    setChatHistory(h => [...h, { role: 'assistant', content: '', id: assistIdx, streaming: true }]);
+    try {
+      const resp = await fetch(`/api/spaces/${spaceId}/workspace/qa`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, history: chatHistory.slice(-8) }),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const raw = line.slice(6).trim();
+          if (raw === '[DONE]') break;
+          try {
+            const p = JSON.parse(raw);
+            if (p.error) accumulated += `\n*Error: ${p.error}*`;
+            else if (typeof p.delta === 'string') accumulated += p.delta;
+            else if (typeof p.content === 'string') accumulated = p.content;
+          } catch {
+            // plain cumulative text from backend — replace entire content
+            if (raw && raw !== '[DONE]') accumulated = raw;
+          }
+          setChatHistory(h => h.map(m => m.id === assistIdx ? { ...m, content: accumulated } : m));
+        }
+      }
+    } catch (e) { accumulated = `*Error: ${e.message}*`; }
+    setChatHistory(h => h.map(m => m.id === assistIdx ? { ...m, content: accumulated, streaming: false } : m));
+    setChatLoading(false);
+  };
+
+  const suggestions = [
+    'What should I focus on today?',
+    'Show my weakest concepts',
+    'Summarize my recent sessions',
+    'What SRS cards are due?',
+  ];
 
   return (
-    <Overlay title="Session Insights" width="52%" height="74%" onClose={onClose} bodyStyle={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {loading ? (
-        <div className="loading-center"><span className="spin" /> Analyzing sessions…</div>
-      ) : opts.length === 0 ? (
-        <div className="empty" style={{ padding: '40px 0' }}>
-          <div className="empty-ttl">Not enough data yet</div>
-          <div className="empty-desc">Complete a few tracked sessions to see personalized optimizations.</div>
+    <Overlay title={`Insights — ${space?.name || ''}`} width="66%" height="85%" onClose={onClose}
+      bodyStyle={{ padding: 0, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {/* Tab bar */}
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--brd)', flexShrink: 0 }}>
+        {[['insights', '⚡ Insights'], ['ask', '🤖 Ask Agent']].map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)}
+            style={{ flex: 1, padding: '10px 0', fontSize: 12.5, fontWeight: tab === id ? 600 : 400, background: 'transparent', border: 'none', borderBottom: tab === id ? '2px solid var(--accent)' : '2px solid transparent', color: tab === id ? 'var(--accent)' : 'var(--txt3)', cursor: 'pointer', transition: 'color 120ms' }}>
+            {label}
+          </button>
+        ))}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '0 12px', gap: 6, flexShrink: 0 }}>
+          <button className="btn btn-muted btn-xs" onClick={() => loadInsights(true)} disabled={refreshing}>
+            {refreshing ? <><span className="spin" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> Analysing…</> : '↻ Refresh'}
+          </button>
         </div>
-      ) : (
-        <>
-          <div className="opt-header">
-            <div className="opt-header-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
-              Session Optimizations
+      </div>
+
+      {/* Insights tab */}
+      {tab === 'insights' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
+          {loading ? (
+            <div className="loading-center"><span className="spin" /> Fetching insights…</div>
+          ) : !content ? (
+            <div className="empty" style={{ padding: '40px 0' }}>
+              <div className="empty-ttl">No insights yet</div>
+              <div className="empty-desc">Click <strong>↻ Refresh</strong> to run the workspace analyser.<br/>The AI will scan your workspace and generate personalised recommendations.</div>
+              <button className="btn btn-accent btn-sm" style={{ marginTop: 14 }} onClick={() => loadInsights(true)} disabled={refreshing}>
+                {refreshing ? 'Analysing…' : 'Run Workspace Analyser'}
+              </button>
             </div>
-            <div className="opt-header-sub">{opts.length} recommendation{opts.length !== 1 ? 's' : ''} based on your recent sessions</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+              <div style={{ fontSize: 10.5, color: 'var(--txt3)', marginBottom: 12, textAlign: 'right' }}>
+                Generated by WorkspaceAnalyserAgent · use ↻ to refresh
+              </div>
+              <div className="insight-md">
+                {content.split('\n## ').map((section, i) => {
+                  const fullSection = i === 0 ? section : `## ${section}`;
+                  const lines = fullSection.split('\n');
+                  const heading = lines[0].replace(/^#+\s*/, '');
+                  const body = lines.slice(1).join('\n').trim();
+                  if (i === 0 && heading.startsWith('# Optimal_Learn')) return null;
+                  const sectionColors = {
+                    'Workspace State': '#38bdf8',
+                    'Learner Signals': '#a78bfa',
+                    'Recommendations': 'var(--accent)',
+                    'Session Focus': '#fbbf24',
+                    'Environment': 'var(--txt3)',
+                    'Orchestrator Notes': '#f87171',
+                  };
+                  const color = Object.entries(sectionColors).find(([k]) => heading.includes(k))?.[1] || 'var(--accent)';
+                  return (
+                    <div key={i} style={{ marginBottom: 16, background: 'var(--surface)', border: '1px solid var(--brd)', borderRadius: 10, borderLeft: `3px solid ${color}`, padding: '14px 16px' }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>{heading}</div>
+                      <div style={{ fontSize: 13, color: 'var(--txt2)', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{body}</div>
+                    </div>
+                  );
+                }).filter(Boolean)}
+                {recs && (
+                  <div style={{ marginBottom: 16, background: 'var(--surface2)', border: '1px solid var(--brd)', borderRadius: 10, borderLeft: '3px solid var(--accent)', padding: '14px 16px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>Recommendations</div>
+                    <div style={{ fontSize: 13, color: 'var(--txt2)', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{recs}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Ask Agent tab */}
+      {tab === 'ask' && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {chatHistory.length === 0 && (
+              <div style={{ padding: '24px 0', textAlign: 'center' }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--txt2)', marginBottom: 6 }}>Ask the Workspace Agent</div>
+                <div style={{ fontSize: 12, color: 'var(--txt3)', marginBottom: 16 }}>Uses tools: SQL, notes, RAG, sessions, concepts, SRS, activity, insights</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center' }}>
+                  {suggestions.map(s => (
+                    <button key={s} className="btn btn-muted btn-sm" style={{ fontSize: 12, minWidth: 240 }} onClick={() => setChatInput(s)}>{s}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {chatHistory.map((msg, i) => (
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start', gap: 3 }}>
+                <div style={{ maxWidth: '86%', padding: '9px 13px', borderRadius: 10, fontSize: 13, lineHeight: 1.6, background: msg.role === 'user' ? 'var(--accent)' : 'var(--surface2)', color: msg.role === 'user' ? '#fff' : 'var(--txt)', border: msg.role === 'assistant' ? '1px solid var(--brd)' : 'none' }}>
+                  {msg.streaming && !msg.content
+                    ? <span style={{ opacity: 0.5, fontSize: 12 }}>Thinking…</span>
+                    : msg.role === 'assistant'
+                      ? <div className="chat-md-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content || ''}</ReactMarkdown></div>
+                      : <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>}
+                </div>
+              </div>
+            ))}
+            {chatLoading && chatHistory.at(-1)?.role !== 'assistant' && (
+              <div style={{ display: 'flex', gap: 5, alignItems: 'center', color: 'var(--txt3)', fontSize: 12 }}>
+                <span className="spin" style={{ width: 12, height: 12 }} /> Agent is working…
+              </div>
+            )}
+            <div ref={chatEndRef} />
           </div>
-          {opts.map((o, i) => (
-            <div key={i} className="opt-card" data-priority={o.priority || 'medium'}>
-              <div className="opt-card-hdr">
-                <span className="opt-priority-dot">{o.priority?.slice(0, 1) || '!'}</span>
-                <span className="opt-source">{(o.signal_source || '').replace(/_/g, ' ')}</span>
-                {o.xp_bonus ? <span className="opt-xp-bonus">+{o.xp_bonus} XP if you act on this</span> : null}
-              </div>
-              <div className="opt-observation">{o.observation}</div>
-              <div className="opt-recommendation">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                {o.recommendation}
-              </div>
+          <div style={{ padding: '10px 14px', borderTop: '1px solid var(--brd)', display: 'flex', gap: 6, flexShrink: 0 }}>
+            <textarea style={{ flex: 1, fontSize: 12.5, padding: '7px 10px', borderRadius: 7, border: '1px solid var(--brd)', background: 'var(--surface2)', color: 'var(--txt)', fontFamily: 'var(--font)', resize: 'none', outline: 'none' }}
+              rows={2} value={chatInput} onChange={e => setChatInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doChat(); } }}
+              placeholder="Ask about your workspace data… (Enter to send)" />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <button className="btn btn-accent btn-sm" onClick={doChat} disabled={chatLoading || !chatInput.trim()}>Send</button>
+              {chatHistory.length > 0 && <button className="btn btn-muted btn-sm" onClick={() => setChatHistory([])}>Clear</button>}
             </div>
-          ))}
-        </>
+          </div>
+        </div>
       )}
     </Overlay>
   );
@@ -1934,6 +2101,8 @@ function RagPanel({ space, spaceId, onClose }) {
     } catch {}
     setFilesLoading(false);
   };
+
+  useEffect(() => () => clearInterval(indexTimer.current), []);
 
   const doIndex = async () => {
     if (indexing) return;

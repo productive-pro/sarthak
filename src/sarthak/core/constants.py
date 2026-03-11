@@ -55,6 +55,7 @@ ACTIVITY_HEAD_TAIL: int = 5
 
 # ── Channels ──────────────────────────────────────────────────────────────────
 TELEGRAM_MESSAGE_LIMIT: int = 4096
+WHATSAPP_MESSAGE_LIMIT: int = 4096   # Meta Cloud API plain-text body limit
 
 # ── Chat / TUI ────────────────────────────────────────────────────────────────
 CHAT_MAX_HISTORY_PAIRS: int   = 20

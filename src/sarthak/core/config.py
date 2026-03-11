@@ -11,13 +11,20 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import tomllib
+import threading
 from pathlib import Path
 from typing import Any
 
 
 _PRODUCTION_DIR    = Path.home() / ".sarthak_ai"
 _PRODUCTION_CONFIG = _PRODUCTION_DIR / "config.toml"
+
+# Cache the parsed config to avoid repeated disk I/O on hot LLM paths.
+_CONFIG_CACHE_TTL = 30.0  # seconds
+_CONFIG_CACHE: dict[Path, tuple[float, float, dict[str, Any]]] = {}
+_CONFIG_CACHE_LOCK = threading.Lock()
 
 
 def _default_data_dir() -> Path:
@@ -55,20 +62,37 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Config not found: {config_path}")
 
+    now = time.monotonic()
+    try:
+        mtime = config_path.stat().st_mtime
+    except Exception:
+        mtime = 0.0
+
+    with _CONFIG_CACHE_LOCK:
+        cached = _CONFIG_CACHE.get(config_path)
+        if cached:
+            cached_at, cached_mtime, cached_cfg = cached
+            if (now - cached_at) < _CONFIG_CACHE_TTL and cached_mtime == mtime:
+                return cached_cfg
+
     with open(config_path, "rb") as f:
         cfg: dict[str, Any] = tomllib.load(f)
 
     cfg = _expand_paths(cfg)
+    # Decrypt any ENC: values stored directly in config.toml
+    cfg = _decrypt_tree(cfg)
 
     # Fill in a sensible default for data_dir if not set
     general = cfg.setdefault("general", {})
     if not general.get("data_dir"):
         general["data_dir"] = str(_default_data_dir())
 
-    # Merge encrypted secrets (if present)
+    # Merge encrypted secrets (if present) — secrets.toml overrides config.toml
     secrets_path = config_path.parent / "secrets.toml"
     _merge_into(cfg, _load_secrets(secrets_path))
 
+    with _CONFIG_CACHE_LOCK:
+        _CONFIG_CACHE[config_path] = (now, mtime, cfg)
     return cfg
 
 

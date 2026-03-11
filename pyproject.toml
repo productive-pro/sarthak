@@ -1,10 +1,10 @@
 
 [project]
 name = "sarthak"
-version = "0.0.2"
+version = "0.0.3"
 description = "Privacy-first self-analytics intelligence platform for Linux, macOS, and Windows"
 readme = "README.md"
-license = { text = "MIT" }
+license = {text = "AGPL-3.0-or-later"}
 requires-python = ">=3.11"
 keywords = ["ai", "productivity", "cli", "analytics", "spaces", "learning"]
 classifiers = [
@@ -62,9 +62,39 @@ Repository = "https://github.com/productive-pro/sarthak"
 Issues = "https://github.com/productive-pro/sarthak/issues"
 
 [project.optional-dependencies]
+# Cloud AI providers
 cloud = [
     "openai",
     "anthropic",
+]
+
+# Relational DB backends (sqlite is built-in, no extra needed)
+postgres = ["asyncpg"]
+duckdb   = ["duckdb"]
+libsql   = ["libsql-client"]
+
+# Vector DB backends (sqlite-vec is in core deps, no extra needed)
+qdrant   = ["qdrant-client"]
+chroma   = ["chromadb"]
+pgvector = ["asyncpg", "pgvector"]
+lancedb  = ["lancedb", "pyarrow"]
+weaviate = ["weaviate-client>=4.0"]
+
+# Cache
+redis = ["redis[asyncio]"]
+
+# Everything except defaults (sqlite + sqlite-vec)
+all-backends = [
+    "asyncpg",
+    "duckdb",
+    "libsql-client",
+    "qdrant-client",
+    "chromadb",
+    "pgvector",
+    "lancedb",
+    "pyarrow",
+    "weaviate-client>=4.0",
+    "redis[asyncio]",
 ]
 
 [project.scripts]

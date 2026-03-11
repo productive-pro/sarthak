@@ -9,6 +9,57 @@ log_format = "json"          # json | console
 
 # [database] section removed — PostgreSQL is no longer used.
 
+[storage]
+# ── Relational backend ──────────────────────────────────────────────────────
+# backend = "sqlite"     ← default, zero extra deps
+# backend = "postgres"   ← requires: pip install sarthak[postgres]
+# backend = "duckdb"     ← requires: pip install sarthak[duckdb]
+# backend = "libsql"     ← requires: pip install sarthak[libsql]  (Turso cloud)
+backend = "sqlite"
+
+# ── Vector / RAG backend ────────────────────────────────────────────────────
+# vector_backend = "sqlite_vec"  ← default, zero extra deps
+# vector_backend = "qdrant"      ← requires: pip install sarthak[qdrant]
+# vector_backend = "chroma"      ← requires: pip install sarthak[chroma]
+# vector_backend = "pgvector"    ← requires: pip install sarthak[pgvector]
+# vector_backend = "lancedb"     ← requires: pip install sarthak[lancedb]
+# vector_backend = "weaviate"    ← requires: pip install sarthak[weaviate]
+vector_backend = "sqlite_vec"
+
+# ── Backend connection config (only used when backend is set above) ─────────
+[storage.postgres]
+url       = ""        # postgresql+asyncpg://user:pass@host/db
+pool_size = 5
+
+[storage.libsql]
+url        = "file://~/.sarthak_ai/sarthak.db"   # or libsql://<db>.turso.io
+auth_token = ""
+
+[storage.duckdb]
+path = "~/.sarthak_ai/sarthak.duckdb"
+
+[storage.qdrant]
+url               = "http://localhost:6333"
+api_key           = ""
+collection_prefix = "sarthak"
+
+[storage.chroma]
+persist_directory = "~/.sarthak_ai/chroma"
+host              = ""    # set for remote HTTP client
+port              = 8000
+
+[storage.lancedb]
+uri = "~/.sarthak_ai/lancedb"    # or s3://bucket/path
+
+[storage.weaviate]
+url       = "http://localhost:8080"
+api_key   = ""
+grpc_port = 50051
+
+[storage.redis]
+url         = ""    # redis://localhost:6379/0  — leave blank for in-process LRU
+default_ttl = 300
+
 [encryption]
 enabled = true
 algorithm = "AES-GCM"       # do not change after first write
@@ -126,14 +177,47 @@ enabled = false
 # allowed_user_id = 123456789  # your Telegram user ID (get it from @userinfobot)
 timeout_seconds = 60
 
+[stt]
+# Unified Speech-to-Text configuration.
+# provider options: whisper | openai | groq | deepgram | assemblyai
+provider  = "whisper"   # active provider
+language  = "auto"      # spoken language code ("en", "fr", …) or "auto"
+
+[stt.whisper]
+# Local whisper.cpp via whisper-cli. Run: python scripts/install-whisper.py
+model      = "base.en"  # ggml-base.en.bin; or set model_path for a custom file
+model_path = ""          # absolute path to a .bin file; overrides model when set
+device     = "CPU"       # --ov-e-device: CPU | GPU | NPU
+beam_size  = 5           # 1 = fastest, 5 = whisper default
+threads    = 0           # CPU threads (0 = whisper-cli default)
+
+[stt.openai]
+# OpenAI Whisper API (or any OpenAI-compatible endpoint)
+api_key   = ""           # or set env OPENAI_API_KEY
+model     = "whisper-1"
+base_url  = ""           # override for Azure / compatible endpoints
+
+[stt.groq]
+# Groq Whisper — very fast, generous free tier
+api_key   = ""           # or set env GROQ_API_KEY
+model     = "whisper-large-v3-turbo"
+
+[stt.deepgram]
+# Deepgram Nova-2 — streaming-capable, high accuracy
+api_key   = ""           # or set env DEEPGRAM_API_KEY
+model     = "nova-2"
+tier      = ""           # optional tier override
+
+[stt.assemblyai]
+# AssemblyAI Universal-2
+api_key   = ""           # or set env ASSEMBLYAI_API_KEY
+
 [whisper]
-# Speech-to-text via whisper-cli (whisper.cpp).
-# Models are stored in ~/.sarthak_ai/whisper_models/
+# Legacy section — kept for backwards compatibility.
+# Prefer [stt.whisper] above for new installs.
 model     = "base.en"   # ggml-base.en.bin in models_dir; or set model_path for a custom location
 model_path = ""          # absolute path to a .bin file; overrides model when set
 device    = "CPU"        # --ov-e-device: CPU | GPU | NPU
 beam_size = 5            # --beam-size: 1 = fastest, 5 = whisper default
 threads   = 0            # -t: CPU threads (0 = whisper-cli default)
 language  = "auto"       # -l: spoken language code (en, fr, de …) or "auto"
-
-

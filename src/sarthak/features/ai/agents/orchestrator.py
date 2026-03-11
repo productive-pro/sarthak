@@ -28,6 +28,7 @@ from sarthak.features.ai.tools import (
     tool_spaces_evaluate, tool_spaces_init, tool_spaces_context,
     tool_spaces_quick, tool_spaces_list,
     tool_spaces_rag_index, tool_spaces_rag_search,
+    tool_workspace_qa, tool_workspace_analyse,
 )
 
 
@@ -191,5 +192,28 @@ def build(provider: str, model_name: str) -> Agent[OrchestratorDeps, Orchestrato
     def spaces_rag_search(query: str, space_dir: str = "", top_k: int = 5) -> str:
         """Search indexed workspace files for content relevant to query. Returns file:line references."""
         return tool_spaces_rag_search(query, space_dir, top_k)
+
+    # ── Workspace Q&A ─────────────────────────────────────────────────────────
+
+    @agent.tool_plain
+    def workspace_qa(question: str, space_dir: str = "") -> str:
+        """
+        Answer any question about the workspace data: sessions, notes, RAG index,
+        SRS cards, concept progress, activity store, SQL queries, file listings.
+
+        Use this when the user asks things like:
+          - "how many sessions did I do?"
+          - "what notes do I have on pandas?"
+          - "what files are indexed?"
+          - "what SQL is in the DB?"
+          - "what concepts am I struggling with?"
+          - "show me my SRS cards due today"
+        """
+        return tool_workspace_qa(question, space_dir)
+
+    @agent.tool_plain
+    def workspace_analyse(space_dir: str = "") -> str:
+        """Force-refresh workspace analysis (Optimal_Learn.md). Use when user asks to analyse/check their workspace."""
+        return tool_workspace_analyse(space_dir)
 
     return agent

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+import re
 from typing import Any
 
 from sarthak.core.constants import (
@@ -87,23 +88,46 @@ async def run_llm(
     provider: str | None = None,
     model: str | None = None,
     retries: int = 2,
+    agent: str = "",
 ) -> str:
-    """One-shot LLM call returning a plain string. Shared by all agents."""
-    from pydantic_ai import Agent
+    """One-shot LLM call returning a plain string. Shared by all agents.
+
+    Every call is logged via log_llm_call (structlog + markdown file).
+    Pass ``agent`` for a meaningful name in the log; defaults to the caller's
+    module name derived at runtime.
+    """
+    import inspect
+    from sarthak.core.ai_utils.multi_provider import call_llm
+    from sarthak.core.ai_utils.prompt_logger import log_llm_call
+
     p, m = resolve_provider_model(provider, model)
-    result = await Agent(
-        build_pydantic_model(p, m),
-        output_type=str,
-        system_prompt=system,
-        retries=retries,
-    ).run(user)
-    return result.output
+
+    # Derive a readable agent name when caller doesn't supply one
+    if not agent:
+        frame = inspect.stack()[1]
+        caller_mod = frame[0].f_globals.get("__name__", "")
+        agent = caller_mod.rsplit(".", 1)[-1]
+
+    last = ""
+    for attempt in range(retries + 1):
+        last = await call_llm(user, provider=p, model=m, system=system)
+        if last and not last.startswith("[Error:"):
+            break
+        if attempt < retries:
+            await asyncio.sleep(1.0 * (attempt + 1))  # 1s, 2s backoff
+
+    log_llm_call(agent=agent, system=system, prompt=user, response=last)
+    return last
 
 
 def parse_json_response(raw: str) -> dict:
     """Strip markdown fences and parse JSON safely."""
     import json
-    clean = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    clean = raw.strip()
+    # Remove optional fenced code blocks (```json ... ```)
+    clean = re.sub(r"^```(?:json)?\s*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\s*```$", "", clean)
+    clean = clean.strip()
     return json.loads(clean)
 
 

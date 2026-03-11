@@ -7,7 +7,7 @@ from sarthak.core.logging import get_logger
 from sarthak.spaces import rag as rag_mod
 from sarthak.spaces.models import SkillLevel, SpaceProfile
 from sarthak.spaces.store import load_profile
-from sarthak.spaces.sub_agents import QuickTestAgent
+from sarthak.spaces.agents import QuickTestAgent
 
 from .db import RoadmapDB
 from .models import QuickTestRow, Roadmap

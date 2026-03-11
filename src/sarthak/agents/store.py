@@ -10,7 +10,9 @@ Storage layout:
 from __future__ import annotations
 
 import json
+import time
 import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,14 @@ log = structlog.get_logger(__name__)
 _GLOBAL_DIR = Path.home() / ".sarthak_ai" / "agents"
 _REGISTRY   = _GLOBAL_DIR / "registry.json"
 _MAX_RUNS   = 50
+_REGISTRY_LOCK = threading.Lock()
+
+# Simple TTL cache for list_agents() — avoids re-reading all spec files every tick
+_list_cache: list[AgentSpec] = []
+_list_cache_mtime: float = 0.0
+_list_cache_registry_mtime: float = 0.0
+_LIST_CACHE_TTL = 10.0  # seconds
+_LIST_CACHE_LOCK = threading.Lock()
 
 
 # ── Directories ───────────────────────────────────────────────────────────────
@@ -63,8 +73,10 @@ def save_agent(spec: AgentSpec) -> Path:
     d = _agent_dir(spec)
     d.mkdir(parents=True, exist_ok=True)
     path = d / "spec.json"
-    path.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    from sarthak.core.utils import write_atomic
+    write_atomic(path, spec.model_dump_json(indent=2))
     _register(spec)
+    _invalidate_list_cache()
     log.info("agent_saved", agent_id=spec.agent_id, scope=spec.scope)
     return path
 
@@ -93,20 +105,37 @@ def delete_agent(agent_id: str) -> bool:
     if spec_path.exists():
         spec_path.unlink()
     _deregister(agent_id)
+    _invalidate_list_cache()
     log.info("agent_deleted", agent_id=agent_id)
     return True
 
 
 def list_agents(space_dir: Path | None = None) -> list[AgentSpec]:
-    """List all agents. Filter by space_dir if given."""
+    """List all agents. Filter by space_dir if given. Uses TTL cache for global listing."""
+    global _list_cache, _list_cache_mtime, _list_cache_registry_mtime
+
+    # Use cached results when no space_dir filter and cache is fresh
+    now = time.monotonic()
+    registry_mtime = _REGISTRY.stat().st_mtime if _REGISTRY.exists() else 0.0
+    if space_dir is None:
+        with _LIST_CACHE_LOCK:
+            if (
+                _list_cache
+                and (now - _list_cache_mtime) < _LIST_CACHE_TTL
+                and registry_mtime == _list_cache_registry_mtime  # same file mtime → not modified
+            ):
+                return list(_list_cache)
+
     agents: list[AgentSpec] = []
     for entry in _load_registry():
         path = Path(entry.get("spec_path", ""))
         if not path.exists():
             continue
-        spec = AgentSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        try:
+            spec = AgentSpec.model_validate_json(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
         if space_dir is not None:
-            # Show ONLY agents belonging to this space
             if spec.scope != AgentScope.SPACE:
                 continue
             try:
@@ -115,7 +144,21 @@ def list_agents(space_dir: Path | None = None) -> list[AgentSpec]:
             except Exception:
                 continue
         agents.append(spec)
+
+    if space_dir is None:
+        with _LIST_CACHE_LOCK:
+            _list_cache = agents
+            _list_cache_mtime = now
+            _list_cache_registry_mtime = registry_mtime
     return agents
+
+
+def _invalidate_list_cache() -> None:
+    global _list_cache, _list_cache_mtime, _list_cache_registry_mtime
+    with _LIST_CACHE_LOCK:
+        _list_cache = []
+        _list_cache_mtime = 0.0
+        _list_cache_registry_mtime = 0.0
 
 
 def update_agent(agent_id: str, **updates: Any) -> AgentSpec | None:
@@ -123,9 +166,9 @@ def update_agent(agent_id: str, **updates: Any) -> AgentSpec | None:
     spec = load_agent(agent_id)
     if not spec:
         return None
-    for key, val in updates.items():
-        setattr(spec, key, val)
-    spec.updated_at = datetime.now(timezone.utc).isoformat()
+    filtered = {k: v for k, v in updates.items() if hasattr(spec, k)}
+    filtered["updated_at"] = datetime.now(timezone.utc).isoformat()
+    spec = spec.model_copy(update=filtered)
     save_agent(spec)
     return spec
 
@@ -137,7 +180,8 @@ def save_run(spec: AgentSpec, run: AgentRun) -> Path:
     rd = _runs_dir(spec)
     rd.mkdir(parents=True, exist_ok=True)
     path = rd / f"{run.run_id}.json"
-    path.write_text(run.model_dump_json(indent=2), encoding="utf-8")
+    from sarthak.core.utils import write_atomic
+    write_atomic(path, run.model_dump_json(indent=2))
     _trim_runs(rd)
     return path
 
@@ -150,9 +194,10 @@ def load_runs(agent_id: str, limit: int = 10) -> list[AgentRun]:
     rd = _runs_dir(spec)
     if not rd.exists():
         return []
-    run_files = sorted(rd.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    run_entries = [(p, p.stat().st_mtime) for p in rd.glob("*.json")]
+    run_entries.sort(key=lambda x: x[1], reverse=True)
     runs: list[AgentRun] = []
-    for f in run_files[:limit]:
+    for f, _ in run_entries[:limit]:
         runs.append(AgentRun.model_validate_json(f.read_text(encoding="utf-8")))
     return runs
 
@@ -166,16 +211,27 @@ def _trim_runs(runs_dir: Path) -> None:
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 
-def _load_registry() -> list[dict]:
+def _load_registry_locked() -> list[dict]:
     _REGISTRY.parent.mkdir(parents=True, exist_ok=True)
     if not _REGISTRY.exists():
         return []
     return json.loads(_REGISTRY.read_text(encoding="utf-8"))
 
 
-def _save_registry(entries: list[dict]) -> None:
+def _save_registry_locked(entries: list[dict]) -> None:
     _REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    _REGISTRY.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    from sarthak.core.utils import write_atomic
+    write_atomic(_REGISTRY, json.dumps(entries, indent=2))
+
+
+def _load_registry() -> list[dict]:
+    with _REGISTRY_LOCK:
+        return _load_registry_locked()
+
+
+def _save_registry(entries: list[dict]) -> None:
+    with _REGISTRY_LOCK:
+        _save_registry_locked(entries)
 
 
 def _registry_by_id() -> dict[str, dict]:
@@ -184,22 +240,34 @@ def _registry_by_id() -> dict[str, dict]:
 
 
 def _register(spec: AgentSpec) -> None:
-    entries = _load_registry()
-    spec_path = str(_agent_dir(spec) / "spec.json")
-    for e in entries:
-        if e.get("agent_id") == spec.agent_id:
-            e.update({"spec_path": spec_path, "name": spec.name, "scope": spec.scope})
-            _save_registry(entries)
-            return
-    entries.append({"agent_id": spec.agent_id, "name": spec.name,
-                    "scope": spec.scope, "spec_path": spec_path})
-    _save_registry(entries)
+    with _REGISTRY_LOCK:
+        entries = _load_registry_locked()
+        spec_path = str(_agent_dir(spec) / "spec.json")
+        for e in entries:
+            if e.get("agent_id") == spec.agent_id:
+                e.update({"spec_path": spec_path, "name": spec.name, "scope": spec.scope})
+                _save_registry_locked(entries)
+                return
+        entries.append({"agent_id": spec.agent_id, "name": spec.name,
+                        "scope": spec.scope, "spec_path": spec_path})
+        _save_registry_locked(entries)
 
 
 def _deregister(agent_id: str) -> None:
-    _save_registry([e for e in _load_registry() if e.get("agent_id") != agent_id])
+    with _REGISTRY_LOCK:
+        entries = _load_registry_locked()
+        _save_registry_locked([e for e in entries if e.get("agent_id") != agent_id])
 
 
 def new_run_id() -> str:
     """Generate a unique run ID."""
     return str(uuid.uuid4())[:8]
+
+
+def compute_next_run(schedule: str) -> str:
+    """Compute next cron fire time as ISO-8601 string. Returns '' on any error."""
+    try:
+        from croniter import croniter
+        return croniter(schedule, datetime.now(timezone.utc)).get_next(datetime).isoformat()
+    except Exception:
+        return ""

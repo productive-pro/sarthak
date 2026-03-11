@@ -96,6 +96,7 @@ export default function ForceGraph({ nodes, links, onNodeClick, width = 800, hei
     const s   = stateRef.current;
     const svg = svgRef.current;
     if (!svg) return;
+    svg.setPointerCapture(e.pointerId);
     const pt  = svgPoint(svg, e.clientX, e.clientY);
     const wx  = (pt.x - s.pan.x) / s.zoom;
     const wy  = (pt.y - s.pan.y) / s.zoom;
@@ -252,7 +253,6 @@ function render(svg, s) {
 }
 
 function reconcileLines(parent, links, nodeMap) {
-  const existing = [...parent.children];
   // Remove extras
   while (parent.children.length > links.length) parent.removeChild(parent.lastChild);
   // Add missing

@@ -3,6 +3,15 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:4848',
+        changeOrigin: true,
+        // Keep /api prefix — backend expects /api/* routes
+      },
+    },
+  },
   build: {
     // Silence the warning; we handle it with manualChunks below
     chunkSizeWarningLimit: 600,
@@ -22,7 +31,6 @@ export default defineConfig({
           // Markdown rendering pipeline
           'vendor-markdown': [
             'react-markdown',
-            'marked',
             'remark-gfm',
             'remark-math',
             'rehype-highlight',
@@ -33,8 +41,8 @@ export default defineConfig({
           'vendor-highlight': ['highlight.js'],
           'vendor-katex':     ['katex'],
 
-          // Routing + state — small but separate from app code
-          'vendor-infra': ['react-router-dom', 'zustand'],
+          // State management
+          'vendor-infra': ['zustand'],
         },
       },
     },

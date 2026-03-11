@@ -1,12 +1,16 @@
 """
-Sarthak AI — Prompt Logger.
-Saves all outgoing LLM prompts to ~/.sarthak_ai/prompt_history/ as markdown files.
+Sarthak AI — LLM Call Logger.
+
+Single entry point: log_llm_call(agent, system, prompt, response)
+  • Emits structured log lines via structlog (agent_prompt / agent_response events).
+  • Writes a human-readable Markdown file to ~/.sarthak_ai/prompt_history/ for debugging.
+
+Called automatically from run_llm() in features/ai/agents/_base.py — no per-agent wiring needed.
 """
 from __future__ import annotations
 
 import os
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
 
 from sarthak.core.logging import get_logger
 
@@ -15,55 +19,50 @@ log = get_logger(__name__)
 HISTORY_DIR = os.path.expanduser("~/.sarthak_ai/prompt_history")
 
 
-def log_prompt(context: str, prompt_data: Any) -> None:
-    """
-    Saves the text prompt to a timestamped Markdown file.
-    `context` is a short string like 'daily_summary' or 'snapshot_analysis'.
+def log_llm_call(
+    agent: str,
+    system: str,
+    prompt: str,
+    response: str,
+) -> None:
+    """Log one complete LLM request+response pair.
+
+    Args:
+        agent:    Short identifier for the calling agent / context (e.g. 'orchestrator').
+        system:   System prompt sent to the LLM.
+        prompt:   User/task prompt sent to the LLM.
+        response: Raw text returned by the LLM.
     """
     try:
+        # ── Structured logs (picked up by any log sink) ───────────────────────
+        log.info(
+            "agent_prompt",
+            agent=agent,
+            prompt_len=len(prompt),
+            system_len=len(system),
+            prompt=prompt,
+        )
+        log.info(
+            "agent_response",
+            agent=agent,
+            response_len=len(response),
+            response=response,
+        )
+
+        # ── File log (human-readable markdown) ────────────────────────────────
         os.makedirs(HISTORY_DIR, exist_ok=True)
-        # Avoid race condition naming if multiple calls happen in identical ms
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{context}.md"
+        ts = datetime.now(tz=timezone.utc)
+        filename = f"{ts.strftime('%Y%m%d_%H%M%S_%f')}_{agent}.md"
         filepath = os.path.join(HISTORY_DIR, filename)
 
-        with open(filepath, "w") as f:
-            f.write(f"# Context: {context}\n")
-            f.write(f"**Time**: {datetime.now().isoformat()}\n\n")
-            f.write("---\n\n")
-            
-            if isinstance(prompt_data, str):
-                f.write(prompt_data)
-            else:
-                # Handle lists of dicts (LiteLLM) or objects (PydanticAI)
-                if isinstance(prompt_data, list):
-                    for item in prompt_data:
-                        if isinstance(item, dict):
-                            _write_litellm_msg(f, item)
-                        else:
-                            f.write(str(item) + "\n")
-                else:
-                    f.write(str(prompt_data) + "\n")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(f"# [{agent}] {ts.isoformat()}\n\n")
+            f.write("## System\n\n")
+            f.write(system.strip() + "\n\n")
+            f.write("## Prompt\n\n")
+            f.write(prompt.strip() + "\n\n")
+            f.write("## Response\n\n")
+            f.write(response.strip() + "\n")
 
-        prompt_str = prompt_data if isinstance(prompt_data, str) else str(prompt_data)
-        log.info("agent_prompt", agent=context, prompt=prompt_str, prompt_len=len(prompt_str))
     except Exception as exc:
-        log.warning("failed_to_log_prompt", error=str(exc))
-
-
-def _write_litellm_msg(f, msg: dict) -> None:
-    role = msg.get("role", "unknown")
-    content = msg.get("content", "")
-    
-    f.write(f"### Role: {role.upper()}\n\n")
-    
-    if isinstance(content, str):
-        f.write(content + "\n\n")
-    elif isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict):
-                if part.get("type") == "text":
-                    f.write(part.get("text", "") + "\n\n")
-                elif part.get("type") == "image_url":
-                    f.write("[IMAGE SENT: Base64 data removed for readability]\n\n")
-    else:
-        f.write(str(content) + "\n\n")
+        log.warning("llm_log_failed", agent=agent, error=str(exc))

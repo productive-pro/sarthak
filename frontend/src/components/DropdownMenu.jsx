@@ -19,14 +19,14 @@ export default function DropdownMenu({ trigger, items }) {
       </div>
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 100,
+          position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 9999,
           background: 'var(--surface)', border: '1px solid var(--brd)', borderRadius: 6,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.3)', minWidth: 120, overflow: 'hidden'
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)', minWidth: 120, overflow: 'hidden',
         }}>
           {items.map((item, i) => (
             <div
               key={i}
-              onClick={() => { setOpen(false); item.onClick(); }}
+              onClick={(e) => { setOpen(false); item.onClick(e); }}
               style={{
                 padding: '8px 12px', fontSize: 12, color: item.danger ? '#f87171' : 'var(--txt)',
                 cursor: 'pointer', whiteSpace: 'nowrap', background: 'transparent',

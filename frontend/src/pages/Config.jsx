@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { Spinner } from '../components/ui';
 import { api } from '../api';
 import { useStore } from '../store';
 
@@ -9,9 +10,7 @@ export default function Config() {
   const [loading, setLoading] = useState(true);
   const { ok, err } = useStore();
 
-  useEffect(() => { load(); }, []);
-
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const r = await api('/config');
@@ -20,7 +19,9 @@ export default function Config() {
       setDirty(false);
     } catch (e) { err(e.message); }
     setLoading(false);
-  };
+  }, [err]); // err is stable from Zustand
+
+  useEffect(() => { load(); }, [load]);
 
   const save = async () => {
     try {
@@ -46,9 +47,9 @@ export default function Config() {
         </div>
       </header>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '16px 24px', overflow: 'hidden' }}>
+      <div className="pg-body" style={{ display: 'flex', flexDirection: 'column', padding: '16px 24px' }}>
         {loading ? (
-          <div className="loading-center"><span className="spin" /></div>
+          <Spinner />
         ) : (
           <textarea
             className="config-editor"

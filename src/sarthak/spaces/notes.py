@@ -56,7 +56,7 @@ async def document_to_note(
     from markitdown import MarkItDown
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: MarkItDown().convert(str(file_path)))
         text = (result.text_content or "").strip()
     except Exception as exc:
@@ -85,7 +85,7 @@ async def document_to_note(
             return (resp.choices[0].message.content or "").strip()
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             md = await loop.run_in_executor(None, _call_llm)
             if md:
                 return md
@@ -253,7 +253,7 @@ async def _markitdown_ocr(image_path: Path, concept: str) -> str:
         md = MarkItDown()
 
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, lambda: md.convert(str(image_path)))
         text = (result.text_content or "").strip()
     except Exception as exc:

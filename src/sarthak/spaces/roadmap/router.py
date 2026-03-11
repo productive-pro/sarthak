@@ -9,6 +9,7 @@ Space dir is resolved as: base_spaces_dir / space_name
 from __future__ import annotations
 
 import json
+import re as _re
 import shutil
 import uuid
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
+_BaseModel = BaseModel
 from fastapi.responses import FileResponse, StreamingResponse
 
 from sarthak.spaces import rag as rag_mod
@@ -38,7 +40,7 @@ from .models import (
     Roadmap,
 )
 from .recommend import recommend_next
-from .whisper_transcribe import transcribe, transcribe_vtt
+from .stt import is_stt_available, invalidate_stt_cache, stt_provider_name, transcribe, transcribe_vtt  # noqa: F401
 from .media_analysis import (
     analyze_transcript, teach_it_back,
     search_transcripts, transcript_to_flashcards, speaking_stats, vtt_to_plain,
@@ -94,6 +96,12 @@ def _space_dir(space: str) -> Path:
 
 
 async def _db(space: str) -> RoadmapDB:
+    """Open and initialise a RoadmapDB for *space*.
+
+    NOTE: RoadmapDB.init() is idempotent (CREATE TABLE IF NOT EXISTS). The
+    underlying connection pool (in db.py) is process-level, so connections are
+    reused across calls — only the RoadmapDB wrapper object is created fresh.
+    """
     db = RoadmapDB(_space_dir(space))
     await db.init()
     return db
@@ -451,6 +459,9 @@ async def analyze_media(space: str, note_id: str) -> dict[str, Any]:
     # Transcribe if no existing transcript
     transcript_text = note.body_md or ""
     if not transcript_text.strip():
+        if not is_stt_available():
+            log.info("analyze_media_skip_no_stt", space=space, note_id=note_id)
+            return {"feedback": "STT not configured — no transcript available.", "stats": {}, "transcript": ""}
         transcript_text = await transcribe_vtt(Path(path_str))
         await db.update_note(note_id, title=note.title, body_md=transcript_text)
 
@@ -480,6 +491,9 @@ async def teach_it_back_endpoint(space: str, note_id: str) -> dict[str, Any]:
         path_str = note.video_path or note.audio_path
         if not path_str or not Path(path_str).exists():
             raise HTTPException(400, "No transcript and no media file")
+        if not is_stt_available():
+            log.info("teach_it_back_skip_no_stt", space=space, note_id=note_id)
+            raise HTTPException(400, "No transcript available and STT is not configured. Set [stt] provider in config.toml.")
         transcript_text = await transcribe_vtt(Path(path_str))
         await db.update_note(note_id, title=note.title, body_md=transcript_text)
 
@@ -901,11 +915,25 @@ async def transcribe_audio(
         audio_path.parent.mkdir(parents=True, exist_ok=True)
         with audio_path.open("wb") as f:
             shutil.copyfileobj(file.file, f)
-        transcript = await transcribe(audio_path)
+        try:
+            transcript = await transcribe(audio_path)
+        except (FileNotFoundError, RuntimeError):
+            log.info("transcribe_note_skip_no_stt", space=space, note_id=note_id)
+            return {"transcript": "", "audio_path": str(audio_path.relative_to(_space_dir(space)))}
         log.info("transcribe_note", space=space, note_id=note_id, chars=len(transcript))
         return {"transcript": transcript, "audio_path": str(audio_path.relative_to(_space_dir(space)))}
     else:
         # Temporary file for live dictation — not persisted
+        if not is_stt_available():
+            raise HTTPException(
+                503,
+                detail=(
+                    "STT is not configured. "
+                    "Set [stt] provider in config.toml and ensure the provider "
+                    "is installed (local: python scripts/install-whisper.py; "
+                    "API: add the api_key for openai / groq / deepgram / assemblyai)."
+                ),
+            )
         suffix = Path(file.filename or "audio.webm").suffix or ".webm"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp_path = Path(tmp.name)
@@ -939,6 +967,10 @@ async def transcribe_subtitle(
     if not media_path.exists():
         raise HTTPException(404, "Media file missing from disk")
 
+    if not is_stt_available():
+        log.info("transcribe_subtitle_skip_no_stt", space=space, note_id=note_id)
+        return {"transcript": "", "note": note.model_dump()}
+
     vtt = await transcribe_vtt(media_path)
     log.info("transcribe_subtitle", space=space, note_id=note_id, chars=len(vtt), format="vtt")
 
@@ -964,10 +996,7 @@ async def transcribe_subtitle(
     # Schedule SRS review for the concept now that transcript is available
     if note.concept_id and vtt:
         from .srs import sync_note_card
-        from sarthak.spaces.roadmap.db import RoadmapDB as _RDB
-        db2 = _RDB(_space_dir(space))
-        await db2.init()
-        roadmap2 = await db2.load_roadmap()
+        roadmap2 = await db.load_roadmap()
         concept_title = note.concept_id
         if roadmap2:
             cn2 = roadmap2.get_concept(note.concept_id)
@@ -1285,24 +1314,23 @@ async def playground_run(space: str, body: dict[str, Any] = Body(...)) -> dict[s
     if result.get("exit_code") is not None:
         try:
             db = await _db(space)
-            run_meta = __import__('json').dumps({
+            run_meta = json.dumps({
                 "stdout": result["stdout"][:4096],
                 "stderr": result["stderr"][:2048],
                 "exit_code": result["exit_code"],
             })
+            # Store run output in body_md; title carries language + exit code
             await db.create_note(NoteRow(
                 id=str(uuid.uuid4()),
                 concept_id=body.get("concept_id", ""),
-                title=f"[{language}] run",
-                body_md=code,
+                title=f"[{language}] exit={result['exit_code']}",
+                body_md=code + "\n\n---\n" + run_meta,
                 type="run_history",
-                audio_path=run_meta,
             ))
         except Exception:
             pass
         try:
-            from sarthak.storage.activity_store import record as _rec
-            await _rec(
+            await _record_activity(
                 activity_type="code_run",
                 space_dir=str(_space_dir(space)),
                 concept_id=body.get("concept_id", ""),
@@ -1372,15 +1400,10 @@ async def save_snippet(space: str, body: dict[str, Any] = Body(...)) -> dict[str
     lang  = body.get("language", "python")
     title = body.get("title") or "Snippet"
     raw_code = body.get("code", "")
-    # Read language from header comment if present (frontend writes // language: python\n...)
-    header_lang = None
     if raw_code:
-        first_line = raw_code.split("\n", 1)[0]
-        import re as _re
-        m = _re.match(r'^(?://|#|--) language: (\w+)$', first_line)
+        m = _re.match(r'^(?://|#|--) language: (\w+)$', raw_code.split("\n", 1)[0])
         if m:
-            header_lang = m.group(1)
-    lang = header_lang or lang
+            lang = m.group(1)
     note = NoteRow(
         id=str(uuid.uuid4()),
         concept_id=body.get("concept_id", ""),
@@ -1399,12 +1422,9 @@ async def update_snippet(space: str, note_id: str, body: dict[str, Any] = Body(.
     if not note or note.type != "snippet":
         raise HTTPException(404, "Snippet not found")
     raw_code = body.get("code", note.body_md)
-    # Re-read language from header comment
-    import re as _re
     header_lang = None
     if raw_code:
-        first_line = raw_code.split("\n", 1)[0]
-        m = _re.match(r'^(?://|#|--) language: (\w+)$', first_line)
+        m = _re.match(r'^(?://|#|--) language: (\w+)$', raw_code.split("\n", 1)[0])
         if m:
             header_lang = m.group(1)
     lang  = header_lang or body.get("language") or note.title.split("]")[0].lstrip("[")
@@ -1425,28 +1445,25 @@ async def delete_snippet(space: str, note_id: str) -> dict[str, Any]:
 
 # ── Space-scoped Agents ───────────────────────────────────────────────────────
 
-@roadmap_router.get("/{space}/agents")
-async def list_space_agents(space: str) -> list[dict]:
-    from sarthak.agents.store import list_agents
-    from sarthak.agents.models import AgentScope
-    sd = _space_dir(space)
-    agents = list_agents(space_dir=sd)
-    return [a.model_dump() for a in agents if a.scope == AgentScope.SPACE]
-
-
-from pydantic import BaseModel as _BaseModel  # noqa: E402
 
 class SpaceAgentCreate(_BaseModel):
     description: str
     notify_telegram: bool = False
 
 
+@roadmap_router.get("/{space}/agents")
+async def list_space_agents(space: str) -> list[dict]:
+    from sarthak.agents.store import list_agents
+    from sarthak.agents.models import AgentScope
+    agents = list_agents(space_dir=_space_dir(space))
+    return [a.model_dump() for a in agents if a.scope == AgentScope.SPACE]
+
+
 @roadmap_router.post("/{space}/agents")
 async def create_space_agent(space: str, body: SpaceAgentCreate) -> dict:
     from sarthak.agents.creator import create_agent_from_description
-    sd = _space_dir(space)
     spec = await create_agent_from_description(
-        body.description, space_dir=sd,
+        body.description, space_dir=_space_dir(space),
         notify_telegram=body.notify_telegram or None,
     )
     return spec.model_dump()

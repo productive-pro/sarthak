@@ -506,10 +506,27 @@ DOMAIN_REGISTRY: dict[SpaceType, dict] = {
 }
 
 
+# CUSTOM space type — minimal placeholder; actual domain is populated by
+# discover_custom_domain() in spaces/roadmap_init.py during space creation.
+CUSTOM_CONCEPT_TREE: dict[SkillLevel, list[str]] = {
+    SkillLevel.NOVICE: ["Define your learning goals", "Map out what you want to learn"],
+}
+DOMAIN_REGISTRY[SpaceType.CUSTOM] = {
+    "concept_tree": CUSTOM_CONCEPT_TREE,
+    "tools": [],
+    "projects": [],
+    "domain_name": "Custom Learning Space",
+    "expert_description": "A personalised space for any learning goal.",
+}
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 def get_domain(space_type: SpaceType) -> dict:
-    return DOMAIN_REGISTRY.get(space_type, DOMAIN_REGISTRY[SpaceType.DATA_SCIENCE])
+    """Return domain config. CUSTOM falls back gracefully; never returns DATA_SCIENCE accidentally."""
+    if space_type in DOMAIN_REGISTRY:
+        return DOMAIN_REGISTRY[space_type]
+    return DOMAIN_REGISTRY[SpaceType.CUSTOM]
 
 
 def get_next_concepts(

@@ -13,6 +13,46 @@ log_format = "json"          # json | console
 enabled = true
 algorithm = "AES-GCM"       # do not change after first write
 
+# ── Storage backend configuration ─────────────────────────────────────────────
+[storage]
+# Relational backend: sqlite (default) | postgres | duckdb
+backend = "sqlite"
+
+# Vector store backend: sqlite_vec (default) | qdrant | chroma
+vector_backend = "sqlite_vec"
+
+[storage.redis]
+# Redis caching for Space Memory reads and hot activity queries.
+# Leave url empty to use the built-in in-process LRU cache (default, zero deps).
+# url = "redis://localhost:6379/0"
+url = ""
+default_ttl = 300          # seconds; Space Memory context cached for 5 min
+
+# Optional: Postgres backend
+# Set backend = "postgres" above to activate.
+# [storage.postgres]
+# url = "postgresql://user:pass@localhost:5432/sarthak"
+# pool_size = 5
+
+# Optional: DuckDB backend (analytics-optimised, great for digest agents)
+# Set backend = "duckdb" above to activate.
+# [storage.duckdb]
+# path = "~/.sarthak_ai/sarthak.duckdb"
+
+# Optional: Qdrant vector backend (best self-hosted vector store)
+# Set vector_backend = "qdrant" above to activate.
+# [storage.qdrant]
+# url = "http://localhost:6333"
+# api_key = ""                    # leave empty for local instance
+# collection_prefix = "sarthak"
+
+# Optional: Chroma vector backend (developer-friendly, Python-native)
+# Set vector_backend = "chroma" above to activate.
+# [storage.chroma]
+# persist_directory = "~/.sarthak_ai/chroma"
+# host = ""     # set for remote Chroma HTTP client
+# port = 8000
+
 [ai]
 # Provider priority: first available + configured is used
 default_provider = "ollama"   # ollama | openai | anthropic | groq | gemini | openrouter

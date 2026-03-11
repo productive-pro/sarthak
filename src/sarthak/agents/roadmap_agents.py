@@ -18,7 +18,7 @@ from typing import AsyncIterator
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from sarthak.agents.prompts.roadmap import ROADMAP, DIGEST_WARMUP, EXPLAIN
+from sarthak.agents.prompts.roadmap import ROADMAP, DIGEST_WARMUP, EXPLAIN, OVERVIEW
 from sarthak.core.logging import get_logger
 from sarthak.features.ai.agents._base import resolve_provider_model, build_pydantic_model
 
@@ -124,6 +124,38 @@ async def generate_roadmap(
     roadmap = Roadmap(space=space_name, chapters=chapters)
     log.info("roadmap_generated", space=space_name, chapters=len(chapters))
     return roadmap
+
+
+# ── Space overview ──────────────────────────────────────────────────────────────
+
+async def generate_space_overview(
+    domain: str,
+    background: str = "",
+    goal: str = "",
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict:
+    """Generate a brief intro, efficient methods, prerequisites and starting overview.
+
+    Returns a dict with keys: what_is_this, efficient_methods, prerequisites,
+    starting_overview, pro_tips. Falls back to empty dict on failure.
+    """
+    import json
+    agent = _make_agent(str, OVERVIEW, provider, model, retries=2)
+    try:
+        result = await agent.run(
+            f"Domain: {domain}\n"
+            f"Learner background: {background or 'general learner'}\n"
+            f"Goal: {goal or f'master {domain}'}\n"
+        )
+        raw = result.output.strip()
+        # Strip markdown fences just in case
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+    except Exception as exc:
+        log.warning("overview_generation_failed", domain=domain, error=str(exc))
+        return {}
 
 
 # ── Daily digest ──────────────────────────────────────────────────────────────
@@ -306,7 +338,7 @@ async def build_digest(space_dir: Path, space_name: str) -> str:
     # ── EngagementAgent: render the digest in learner's style ─────────────────
     if profile and profile.learner.background:
         try:
-            from sarthak.spaces.sub_agents import EngagementAgent
+            from sarthak.spaces.agents import EngagementAgent
             agent = EngagementAgent()
             raw_digest = await agent.render(
                 content={"digest": raw_digest},

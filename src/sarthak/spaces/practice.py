@@ -384,11 +384,16 @@ class PracticeEngine:
             return [scope] if scope else [profile.learner.mastered_concepts[-1]] if profile.learner.mastered_concepts else all_concepts[:3]
 
         if test_type == "topic":
-            # Find all concepts at the scope level
+            # Find concepts whose SkillLevel key title matches the scope string
             for level, concepts in tree.items():
-                if level.value == scope or scope in str(level):
+                if level.value == scope:
                     return concepts
-            # Fall back: return concepts close to current level
+            # scope is a topic title — match by prefix/substring across all concepts
+            scope_lower = scope.lower()
+            matched = [c for c in all_concepts if scope_lower in c.lower()]
+            if matched:
+                return matched[:15]
+            # Fall back: concepts close to current level
             return [c for c in all_concepts if c in profile.learner.mastered_concepts][:10] or all_concepts[:10]
 
         # full_space: all mastered + current level concepts

@@ -180,16 +180,17 @@ async def get_copilot_token() -> str:
 def get_copilot_token_sync() -> str:
     """Sync wrapper for use in synchronous builder context."""
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         if loop.is_running():
             # Inside an async context — schedule and block via a future.
             # This shouldn't normally be called from a running loop; prefer get_copilot_token().
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 return pool.submit(asyncio.run, get_copilot_token()).result()
-        return loop.run_until_complete(get_copilot_token())
     except RuntimeError:
         return asyncio.run(get_copilot_token())
+    # No running loop but event loop available — run to completion.
+    return asyncio.run(get_copilot_token())
 
 
 def is_configured() -> bool:

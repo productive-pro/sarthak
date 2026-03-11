@@ -12,7 +12,6 @@ run_agent(spec) → AgentRun
 """
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,27 +21,10 @@ from sarthak.agents.models import AgentRun, AgentScope, AgentSpec, AgentTool
 from sarthak.agents.sandbox import SandboxConfig, enforce_sandbox
 from sarthak.agents.sandbox.path_guard import PathGuard, PathViolation
 from sarthak.agents.sandbox.process_sandbox import run_shell
-from sarthak.agents.store import new_run_id, save_run, update_agent
+from sarthak.agents.store import compute_next_run, new_run_id, save_run, update_agent
+from sarthak.core.notify import send_telegram
 
 log = structlog.get_logger(__name__)
-
-
-def compute_next_run(schedule: str) -> str:
-    try:
-        from croniter import croniter
-        return croniter(schedule, datetime.now(timezone.utc)).get_next(datetime).isoformat()
-    except Exception:
-        return ""
-
-
-async def send_telegram(cfg: dict, message: str, agent_id: str = "") -> None:
-    try:
-        from sarthak.core.notify import send_telegram_message
-        tg = cfg.get("telegram", {})
-        if tg.get("enabled") and tg.get("bot_token"):
-            await send_telegram_message(cfg, message[:3800])
-    except Exception as exc:
-        log.warning("telegram_send_failed", agent_id=agent_id, error=str(exc))
 
 
 async def run_agent(spec: AgentSpec) -> AgentRun:
@@ -69,7 +51,14 @@ async def run_agent(spec: AgentSpec) -> AgentRun:
 
     if spec.notify_telegram and run.output:
         from sarthak.core.config import load_config
-        await send_telegram(load_config(), run.output, agent_id=spec.agent_id)
+        await send_telegram(load_config(), run.output[:3800], agent_id=spec.agent_id)
+
+    if getattr(spec, "notify_whatsapp", False) and run.output:
+        try:
+            from sarthak.features.channels.whatsapp.client import send_message_standalone
+            await send_message_standalone(run.output[:3800])
+        except Exception as exc:
+            log.warning("whatsapp_notify_failed", agent_id=spec.agent_id, error=str(exc))
 
     log.info("agent_run_done", agent_id=spec.agent_id, success=run.success)
     return run
@@ -168,10 +157,10 @@ def _build_tools(spec: AgentSpec, cfg: SandboxConfig, guard: PathGuard) -> list:
 async def _build_prompt(spec: AgentSpec) -> str:
     """Assemble full prompt with space context for space/multi-space agents."""
     parts: list[str] = []
+    from sarthak.spaces.store import get_space_context
 
     # Primary space context
     if spec.scope == AgentScope.SPACE and spec.space_dir:
-        from sarthak.spaces.store import get_space_context
         ctx = get_space_context(Path(spec.space_dir))
         if ctx and ctx.strip():
             parts.append(ctx)
@@ -179,12 +168,11 @@ async def _build_prompt(spec: AgentSpec) -> str:
     # Extra context spaces (system agents that span multiple spaces)
     for extra_dir in spec.context_space_dirs:
         try:
-            from sarthak.spaces.store import get_space_context
             ctx = get_space_context(Path(extra_dir))
             if ctx and ctx.strip():
                 parts.append(ctx)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("context_load_failed", space_dir=extra_dir, error=str(exc))
 
     parts.append(spec.prompt)
     return "\n\n---\n\n".join(parts)

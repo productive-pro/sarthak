@@ -235,15 +235,172 @@ def _medicine_template() -> dict:
     }
 
 
+def _software_eng_template() -> dict:
+    return {
+        "directories": [
+            "src",
+            "tests",
+            "docs",
+            "scripts",
+            "infra",
+            "notes",
+            ".spaces/tasks",
+        ],
+        "readme_files": {
+            "src/README.md": (
+                "# Source Code\n\n"
+                "Production-quality code. Follow the single-responsibility principle.\n\n"
+                "```\nsrc/\n"
+                "  api/        # HTTP layer (routes, schemas, middleware)\n"
+                "  core/       # Business logic — no I/O\n"
+                "  infra/      # DB, cache, external services\n"
+                "  workers/    # Background jobs\n```\n\n"
+                "> Expert rule: The `core/` layer must never import from `api/` or `infra/`."
+            ),
+            "tests/README.md": (
+                "# Tests\n\n"
+                "Test pyramid: many unit tests, fewer integration, few E2E.\n\n"
+                "```bash\n# Run all tests\npytest -x --tb=short\n\n"
+                "# Watch mode\npytest-watch\n```\n\n"
+                "> Aim: 80%+ coverage on `core/`. Zero tolerance for untested business logic."
+            ),
+            "notes/README.md": (
+                "# Architecture Notes\n\n"
+                "Record design decisions (ADRs) here.\n\n"
+                "Format: `YYYY-MM-DD_decision_title.md`\n\n"
+                "Each ADR: Context → Decision → Consequences."
+            ),
+        },
+        "starter_files": {
+            ".editorconfig": (
+                "root = true\n\n"
+                "[*.py]\n"
+                "indent_style = space\n"
+                "indent_size = 4\n"
+                "charset = utf-8\n"
+                "insert_final_newline = true\n"
+            ),
+            ".gitignore": (
+                "# Python\n__pycache__/\n*.pyc\n.venv/\ndist/\nbuild/\n*.egg-info/\n\n"
+                "# Env\n.env\n*.env\n\n"
+                "# IDE\n.vscode/\n.idea/\n"
+            ),
+        },
+    }
+
+
+def _education_template() -> dict:
+    return {
+        "directories": [
+            "curriculum",
+            "lessons",
+            "assessments",
+            "resources",
+            "learner_data",
+            "notes",
+            ".spaces/tasks",
+        ],
+        "readme_files": {
+            "curriculum/README.md": (
+                "# Curriculum Design\n\n"
+                "Structure: learning objectives → activities → assessments.\n\n"
+                "Use Bloom's taxonomy levels:\n"
+                "  Remember → Understand → Apply → Analyse → Evaluate → Create"
+            ),
+            "assessments/README.md": (
+                "# Assessments\n\n"
+                "- Formative: low-stakes checks for understanding during learning\n"
+                "- Summative: end-of-unit evaluation\n\n"
+                "> Research: immediate feedback beats delayed by 3-5x for retention."
+            ),
+        },
+        "starter_files": {},
+    }
+
+
+def _business_template() -> dict:
+    return {
+        "directories": [
+            "analysis",
+            "reports",
+            "data",
+            "presentations",
+            "strategy",
+            "notes",
+            ".spaces/tasks",
+        ],
+        "readme_files": {
+            "analysis/README.md": (
+                "# Analysis\n\n"
+                "One folder per analytical question.\n\n"
+                "Structure each analysis:\n"
+                "  1. Question / hypothesis\n"
+                "  2. Data sources\n"
+                "  3. Method\n"
+                "  4. Findings\n"
+                "  5. Recommendation\n"
+            ),
+            "reports/README.md": (
+                "# Reports\n\n"
+                "Audience-first. Lead with the insight, not the method.\n\n"
+                "> Rule: A board member should grasp the key finding in 30 seconds."
+            ),
+        },
+        "starter_files": {},
+    }
+
+
+def _research_template() -> dict:
+    return {
+        "directories": [
+            "literature",
+            "data/raw",
+            "data/processed",
+            "analysis",
+            "writing",
+            "figures",
+            "notes",
+            ".spaces/tasks",
+        ],
+        "readme_files": {
+            "literature/README.md": (
+                "# Literature\n\n"
+                "Track papers with a structured reading log:\n\n"
+                "| Paper | Year | Key Claim | Method | Gap | Relevance |\n"
+                "|-------|------|-----------|--------|-----|-----------|"
+            ),
+            "data/README.md": (
+                "# Data\n\n"
+                "- `raw/`       — Original, immutable. Never modify.\n"
+                "- `processed/` — Cleaned, transformed, analysis-ready.\n\n"
+                "> Version data with DVC: `dvc add data/raw/dataset.csv`"
+            ),
+            "writing/README.md": (
+                "# Writing\n\n"
+                "Draft structure: Abstract → Introduction → Methods → Results → Discussion.\n\n"
+                "> Write the methods section first — it clarifies what data you actually need."
+            ),
+        },
+        "starter_files": {},
+    }
+
+
 def _generic_template() -> dict:
     return {
         "directories": [
             "notes",
             "projects",
             "resources",
+            "reflections",
             ".spaces/tasks",
         ],
-        "readme_files": {},
+        "readme_files": {
+            "notes/README.md": (
+                "# Notes\n\n"
+                "Your personal knowledge base. One file per concept or topic.\n\n"
+                "Use consistent headers: ## Overview, ## Key Points, ## Questions, ## Connections"
+            ),
+        },
         "starter_files": {},
     }
 
@@ -255,6 +412,11 @@ TEMPLATES: dict[SpaceType, dict] = {
     SpaceType.AI_ENGINEERING: _ds_ai_template(),
     SpaceType.EXAM_PREP:      _exam_template(),
     SpaceType.MEDICINE:       _medicine_template(),
+    SpaceType.SOFTWARE_ENG:   _software_eng_template(),
+    SpaceType.EDUCATION:      _education_template(),
+    SpaceType.BUSINESS:       _business_template(),
+    SpaceType.RESEARCH:       _research_template(),
+    SpaceType.CUSTOM:         _generic_template(),
 }
 
 
@@ -272,9 +434,19 @@ class WorkspaceTransformer:
     def transform(
         self,
         space_type: SpaceType = SpaceType.DATA_SCIENCE,
+        extra_dirs: list[str] | None = None,
     ) -> list[str]:
-        """Apply expert workspace template. Returns list of created paths."""
+        """Apply expert workspace template. Returns list of created paths.
+
+        extra_dirs: additional directories to create (used for CUSTOM spaces
+        where discover_custom_domain returns workspace_folders).
+        """
         template = TEMPLATES.get(space_type, _generic_template())
+        if extra_dirs:
+            template = dict(template)
+            template["directories"] = list(dict.fromkeys(
+                template.get("directories", []) + extra_dirs
+            ))
         created: list[str] = []
 
         for d in template.get("directories", []):

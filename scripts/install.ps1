@@ -197,10 +197,12 @@ try {
     Write-Warn "CLI service install failed — attempting direct fallback"
     # Task Scheduler doesn't support per-task env vars, so we use a wrapper .bat
     $WrapperBat = Join-Path $InstallDir "run_orchestrator.bat"
+    # Write ANSI (ASCII) so cmd.exe can read the .bat without BOM issues
     $WrapperContent = "@echo off`r`nset SARTHAK_CONFIG=$ConfigFile`r`nset SARTHAK_ORCHESTRATOR_SKIP_CAPTURE=1`r`n`"$SarthakExe`" orchestrator`r`n"
     [System.IO.File]::WriteAllText($WrapperBat, $WrapperContent, [System.Text.Encoding]::ASCII)
 
-    $Action    = New-ScheduledTaskAction -Execute $WrapperBat -WorkingDirectory $InstallDir
+    # Use PowerShell native cmdlets (not schtasks.exe) to avoid shell quoting issues with paths
+    $Action    = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$WrapperBat`"" -WorkingDirectory $InstallDir
     $Trigger   = New-ScheduledTaskTrigger -AtLogOn
     $Settings  = New-ScheduledTaskSettingsSet `
         -RestartCount 5 `
