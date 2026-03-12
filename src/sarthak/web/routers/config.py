@@ -34,5 +34,14 @@ async def save_config(body: ConfigSave) -> dict:
     except Exception as exc:
         raise HTTPException(400, f"Invalid TOML: {exc}")
     path = _config_path()
-    path.write_text(body.content, encoding="utf-8")
+    # Atomic write: prevents partial writes on crash/kill
+    from sarthak.core.utils import write_atomic
+    write_atomic(path, body.content)
+    # Invalidate the in-process config cache so next load_config() picks up changes
+    try:
+        from sarthak.core.config import _CONFIG_CACHE, _CONFIG_CACHE_LOCK
+        with _CONFIG_CACHE_LOCK:
+            _CONFIG_CACHE.pop(path, None)
+    except Exception:
+        pass
     return {"ok": True, "path": str(path)}

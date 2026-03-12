@@ -23,6 +23,7 @@ Performance notes:
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +41,7 @@ _running: set[str] = set()
 _spaces_cache: list[tuple[Path, dict]] = []
 _spaces_cache_at: float = 0.0
 _SPACES_CACHE_TTL = 5.0
-_spaces_cache_lock = asyncio.Lock()
+_spaces_cache_lock = threading.Lock()  # sync lock — _valid_spaces() is a sync function
 
 
 # ── Built-in system agents ─────────────────────────────────────────────────────
@@ -207,15 +208,17 @@ def _valid_spaces() -> list[tuple[Path, dict]]:
     from sarthak.spaces.store import list_spaces
     global _spaces_cache, _spaces_cache_at
     now = datetime.now(timezone.utc).timestamp()
-    if _spaces_cache and (now - _spaces_cache_at) < _SPACES_CACHE_TTL:
-        return list(_spaces_cache)
+    with _spaces_cache_lock:
+        if _spaces_cache and (now - _spaces_cache_at) < _SPACES_CACHE_TTL:
+            return list(_spaces_cache)
     result: list[tuple[Path, dict]] = []
     for info in list_spaces():
         sd = Path(info.get("directory", ""))
         if sd.exists():
             result.append((sd, info))
-    _spaces_cache = result
-    _spaces_cache_at = now
+    with _spaces_cache_lock:
+        _spaces_cache = result
+        _spaces_cache_at = now
     return result
 
 

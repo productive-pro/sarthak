@@ -34,7 +34,8 @@ async def get_chat_sessions(limit: int = 20) -> list[dict]:
             """
             SELECT session_id,
                    MAX(ts)   AS last_ts,
-                   COUNT(*)  AS msg_count
+                   COUNT(*)  AS msg_count,
+                   MIN(CASE WHEN role='user' THEN content END) AS first_msg
             FROM chat_history
             GROUP BY session_id
             ORDER BY last_ts DESC

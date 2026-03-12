@@ -236,11 +236,31 @@ async def ask_orchestrator(
         result = await agent.run(question, deps=deps, message_history=history)
         output: OrchestratorResult = result.output
         from sarthak.core.ai_utils.prompt_logger import log_llm_call
+
+        # Collect the full system prompt from pydantic-ai message history
+        _system_parts: list[str] = [f"provider={resolved_provider} model={resolved_model}"]
+        try:
+            from pydantic_ai.messages import ModelRequest, SystemPromptPart
+            for msg in result.all_messages():
+                if isinstance(msg, ModelRequest):
+                    for part in msg.parts:
+                        if isinstance(part, SystemPromptPart):
+                            _system_parts.append(part.content)
+        except Exception:
+            pass
+
         log_llm_call(
             agent="orchestrator",
-            system=f"provider={resolved_provider} model={resolved_model}",
+            system="\n\n".join(_system_parts),
             prompt=question,
-            response=output.reply or "",
+            response=f"[action={output.action_taken}]\n\n{output.reply or ''}",
+        )
+        log.info(
+            "orchestrator_result",
+            action=output.action_taken,
+            reply_len=len(output.reply or ""),
+            provider=resolved_provider,
+            model=resolved_model,
         )
 
         # Fire-and-forget: extract behavioural pattern if this was a spaces learning exchange

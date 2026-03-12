@@ -1,240 +1,37 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import ReactMarkdown from 'react-markdown';
+/**
+ * Chat.jsx — Perplexity-style chat with correct session management.
+ *
+ * Architecture:
+ *   Chat (manages session state + sidebar)
+ *     └─ ChatSession key={sessionKey}  (remounts entirely on new/switch session)
+ *          ├─ useSarthakRuntime        (creates adapter + useLocalRuntime)
+ *          ├─ AssistantRuntimeProvider (scoped inside the keyed boundary)
+ *          └─ ChatThread               (UI)
+ *
+ * Why key remount: useLocalRuntime only reads initialMessages once at construction.
+ * To reset to a new empty thread or load a different session's history, the entire
+ * provider+runtime must be unmounted and remounted. Putting the key on ChatSession
+ * (which wraps AssistantRuntimeProvider) achieves this correctly.
+ */
+import { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  AssistantRuntimeProvider,
+  ThreadPrimitive,
+  MessagePrimitive,
+  ComposerPrimitive,
+  useThreadRuntime,
+} from '@assistant-ui/react';
+import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import { useSarthakRuntime } from '../hooks/useSarthakRuntime';
 import { api } from '../api';
-import { SendIcon, ChevronDownIcon } from '../components/icons';
-import { fmt } from '../utils/format';
 import { useStore } from '../store';
 
-// ── Custom hook: streaming chat over SSE ──────────────────────────────────────
 const STORAGE_KEY = 'sarthak_chat_session_id';
+const loadStored = () => { try { return localStorage.getItem(STORAGE_KEY) || null; } catch { return null; } };
+const saveStored = (sid) => { try { sid ? localStorage.setItem(STORAGE_KEY, sid) : localStorage.removeItem(STORAGE_KEY); } catch {} };
 
-function useChat() {
-  const [messages, setMessages] = useState([]);
-  const [sessions, setSessions] = useState([]);
-  const [sessionId, setSessionIdState] = useState(() => {
-    try { return localStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; }
-  });
-  const [streaming, setStreaming] = useState(false);
-  const { err } = useStore();
-
-  // Persist sessionId to localStorage whenever it changes
-  const setSessionId = useCallback((sid) => {
-    setSessionIdState(sid);
-    try {
-      if (sid) localStorage.setItem(STORAGE_KEY, sid);
-      else localStorage.removeItem(STORAGE_KEY);
-    } catch { /* ignore */ }
-  }, []);
-
-  const refreshSessions = useCallback(async () => {
-    try {
-      const r = await api('/chat/sessions');
-      setSessions(r.sessions || (Array.isArray(r) ? r : []));
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => { refreshSessions(); }, [refreshSessions]);
-
-  // Load persisted session messages on mount
-  useEffect(() => {
-    if (!sessionId) return;
-    api(`/chat/history?session_id=${sessionId}`)
-      .then(r => setMessages((r.messages || []).map((m, i) => ({ ...m, id: `hist_${i}` }))))
-      .catch(() => { /* session may be deleted; clear it */ setSessionId(''); });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // run only on mount
-
-  const loadSession = useCallback(async (sid) => {
-    setSessionId(sid);
-    if (!sid) { setMessages([]); return; }
-    try {
-      const r = await api(`/chat/history?session_id=${sid}`);
-      setMessages((r.messages || []).map((m, i) => ({ ...m, id: `hist_${i}` })));
-    } catch (e) { err(e.message); }
-  }, [err, setSessionId]);
-
-  const deleteSession = useCallback(async (sid) => {
-    try {
-      await api(`/chat/sessions/${sid}`, { method: 'DELETE' });
-      if (sessionId === sid) { setMessages([]); setSessionId(''); }
-      refreshSessions();
-    } catch (e) { err(e.message); }
-  }, [sessionId, refreshSessions, err, setSessionId]);
-
-  const abortRef = useRef(null);
-
-  const sendMessage = useCallback(async (text) => {
-    if (!text.trim() || streaming) return;
-
-    // Cancel any previous in-flight stream
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    const ts = Date.now();
-    const uid = `u_${ts}`;
-    const aid = `a_${ts + 1}`;
-    setMessages(m => [
-      ...m,
-      { id: uid, role: 'user', content: text },
-      { id: aid, role: 'assistant', content: '', streaming: true },
-    ]);
-    setStreaming(true);
-
-    let acc = '';
-    let activeSid = sessionId;
-
-    try {
-      const resp = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, session_id: activeSid || null }),
-        signal: controller.signal,
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
-
-      const reader = resp.body.getReader();
-      // Ensure reader is released if the abort signal fires mid-stream
-      controller.signal.addEventListener('abort', () => { reader.cancel().catch(() => {}); }, { once: true });
-      const dec = new TextDecoder();
-      let buf = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const raw = line.slice(6).trim();
-          if (raw === '[DONE]') { buf = ''; break; }
-
-          // Session ID marker
-          if (raw.startsWith('[SESSION:') && raw.endsWith(']')) {
-            const sid = raw.slice(9, -1).trim();
-            if (sid) { activeSid = sid; setSessionId(sid); }
-            continue;
-          }
-
-          // The backend streams cumulative text (not deltas) — replace, don't append
-          // Try JSON for error/delta payloads, otherwise treat as full accumulated text
-          try {
-            const p = JSON.parse(raw);
-            if (p.session_id) { activeSid = p.session_id; setSessionId(p.session_id); }
-            if (p.error) acc = `${acc}\n\n*Error: ${p.error}*`;
-            // p.full=true means the payload is the full text so far (replace); otherwise append delta
-            else if (typeof p.delta === 'string') acc = (p.full || p.replace_all) ? p.delta : acc + p.delta;
-            else if (typeof p.content === 'string') acc = p.content;
-          } catch {
-            // Plain text from backend: could be cumulative (replace) or delta (append).
-            // Backend streams cumulative text, so replace the whole accumulated buffer.
-            if (raw && raw !== '[DONE]') acc = raw;
-          }
-          setMessages(m => m.map(msg => msg.id === aid ? { ...msg, content: acc } : msg));
-        }
-      }
-    } catch (e) {
-      if (e.name === 'AbortError') return; // cancelled — don't update state
-      acc = acc || `*Error: ${e.message}*`;
-    }
-
-    setMessages(m => m.map(msg =>
-      msg.id === aid ? { ...msg, content: acc || '*(no response)*', streaming: false } : msg
-    ));
-    setStreaming(false);
-    refreshSessions();
-  }, [streaming, sessionId, refreshSessions]);
-
-  return { messages, sessions, sessionId, streaming, loadSession, deleteSession, sendMessage, setMessages, setSessionId, refreshSessions };
-}
-
-// ── Session picker ────────────────────────────────────────────────────────────
-function SessionPicker({ sessions, sessionId, onSelect }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef();
-
-  useEffect(() => {
-    if (!open) return;
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, [open]);
-
-  const current = sessions.find(s => s.session_id === sessionId);
-  const label = current
-    ? `${fmt(current.last_ts)} (${current.msg_count || 0} msgs)`
-    : 'New session';
-
-  return (
-    <div ref={ref} style={{ position: 'relative' }}>
-      <button className="s-select" onClick={() => setOpen(o => !o)}
-        style={{ width: 220, textAlign: 'left', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12.5 }}>{label}</span>
-        <ChevronDownIcon size={9} sw="2" />
-      </button>
-      {open && (
-        <div style={{ position: 'absolute', top: '110%', left: 0, right: 0, zIndex: 400,
-          background: 'var(--surface)', border: '1px solid var(--brd)', borderRadius: 8,
-          boxShadow: '0 8px 28px rgba(0,0,0,.4)', maxHeight: 320, overflowY: 'auto' }}>
-          <div onClick={() => { onSelect(''); setOpen(false); }}
-            style={{ padding: '9px 14px', cursor: 'pointer', fontSize: 12.5, borderBottom: '1px solid var(--brd)',
-              color: !sessionId ? 'var(--accent)' : 'var(--txt3)', fontWeight: !sessionId ? 600 : 400 }}>
-            ＋ New session
-          </div>
-          {sessions.map(s => {
-            const active = s.session_id === sessionId;
-            return (
-              <div key={s.session_id} onClick={() => { onSelect(s.session_id); setOpen(false); }}
-                style={{ padding: '9px 14px', cursor: 'pointer', borderBottom: '1px solid var(--brd)',
-                  background: active ? 'var(--accent-dim)' : 'transparent' }}>
-                <div style={{ fontSize: 12.5, color: active ? 'var(--accent)' : 'var(--txt)',
-                  fontWeight: active ? 600 : 400 }}>{fmt(s.last_ts)}</div>
-                <div style={{ fontSize: 11, color: 'var(--txt3)', marginTop: 2 }}>
-                  {s.msg_count || 0} messages
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Message bubble ────────────────────────────────────────────────────────────
-function Message({ msg }) {
-  const isUser = msg.role === 'user';
-  return (
-    <div className={`bubble ${msg.role}`}>
-      <div className={`b-av ${msg.role}`}>{isUser ? 'U' : 'AI'}</div>
-      <div className="b-content">
-        {isUser ? (
-          <span style={{ whiteSpace: 'pre-wrap', fontSize: 13.5 }}>{msg.content}</span>
-        ) : msg.streaming && !msg.content ? (
-          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-            {[0,1,2].map(i => (
-              <span key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)',
-                display: 'inline-block', animation: `typingDot 1.2s ${i*0.2}s ease-in-out infinite` }} />
-            ))}
-          </span>
-        ) : (
-          <div className="chat-md-content">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-              {msg.content || ''}
-            </ReactMarkdown>
-            {msg.streaming && <span className="stream-cursor">▍</span>}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Empty state ───────────────────────────────────────────────────────────────
 const SUGGESTIONS = [
   'What did I work on today?',
   'Summarize my recent activity',
@@ -242,104 +39,371 @@ const SUGGESTIONS = [
   'Show my productivity trends',
 ];
 
-// ── Main Chat page ────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function parseSessionDate(s) {
+  if (!s?.last_ts) return null;
+  // last_ts is an ISO string like "2026-03-12T15:30:00.000Z" — parse directly
+  const d = new Date(s.last_ts);
+  return isNaN(d) ? null : d;
+}
+
+function fmtSessionTitle(s) {
+  const snippet = s.first_msg;
+  if (snippet && snippet.trim()) {
+    const trimmed = snippet.trim();
+    return trimmed.length > 42 ? trimmed.slice(0, 42) + '…' : trimmed;
+  }
+  const d = parseSessionDate(s);
+  if (!d) return 'Session';
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function getSessionGroup(d) {
+  if (!d) return 'Older';
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.floor((todayStart - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 864e5);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays <= 7) return 'Previous 7 days';
+  if (diffDays <= 30) return 'Previous 30 days';
+  return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+}
+
+function groupSessions(sessions) {
+  const order = [];
+  const map = {};
+  for (const s of sessions) {
+    const d = parseSessionDate(s);
+    const group = getSessionGroup(d);
+    if (!map[group]) { map[group] = []; order.push(group); }
+    map[group].push(s);
+  }
+  return order.map(g => ({ group: g, items: map[g] }));
+}
+
+// ── Session Sidebar (collapsed by default, expands on hover) ──────────────────
+function SessionSidebar({ sessions, activeId, onSelect, onNew, onDelete }) {
+  const groups = groupSessions(sessions);
+  return (
+    <aside className="chat-sidebar">
+      {/* Collapsed: show only the new-chat icon */}
+      <div className="chat-sidebar-icon-row">
+        <button className="chat-new-btn chat-new-btn--icon" onClick={onNew} title="New chat">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2.2" strokeLinecap="round">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+        </button>
+      </div>
+      {/* Expanded panel (visible on hover) */}
+      <div className="chat-sidebar-panel">
+        <div className="chat-sidebar-hdr">
+          <span className="chat-sidebar-title">Chats</span>
+          <button className="chat-new-btn" onClick={onNew} title="New chat">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2.2" strokeLinecap="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+        </div>
+        <div className="chat-sidebar-list">
+          {sessions.length === 0 && (
+            <div className="chat-sidebar-empty">No history yet</div>
+          )}
+          {groups.map(({ group, items }) => (
+            <div key={group} className="chat-sidebar-group">
+              <div className="chat-sidebar-group-label">{group}</div>
+              {items.map(s => (
+                <div key={s.session_id}
+                  className={`chat-sidebar-item ${s.session_id === activeId ? 'active' : ''}`}
+                  onClick={() => onSelect(s.session_id)}>
+                  <div className="chat-sidebar-item-label">{fmtSessionTitle(s)}</div>
+                  <div className="chat-sidebar-item-meta">{s.msg_count || 0} msgs</div>
+                  <button className="chat-sidebar-del"
+                    onClick={e => { e.stopPropagation(); onDelete(s.session_id); }}
+                    title="Delete">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                      strokeWidth="2.5" strokeLinecap="round">
+                      <path d="M18 6 6 18M6 6l12 12"/>
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+// ── Markdown renderer ──────────────────────────────────────────────────────────
+const MarkdownText = () => (
+  <MarkdownTextPrimitive
+    remarkPlugins={[remarkGfm]}
+    rehypePlugins={[rehypeHighlight]}
+    className="chat-markdown"
+  />
+);
+
+// ── Typing indicator ───────────────────────────────────────────────────────────
+function TypingDots() {
+  return (
+    <span className="chat-typing">
+      {[0, 1, 2].map(i => (
+        <span key={i} className="chat-typing-dot" style={{ animationDelay: `${i * 0.2}s` }} />
+      ))}
+    </span>
+  );
+}
+
+// ── Messages ───────────────────────────────────────────────────────────────────
+function UserMessage() {
+  return (
+    <MessagePrimitive.Root className="chat-msg chat-msg--user">
+      <div className="chat-bubble chat-bubble--user">
+        <MessagePrimitive.Content />
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+function AssistantMessage() {
+  return (
+    <MessagePrimitive.Root className="chat-msg chat-msg--assistant">
+      <div className="chat-avatar">AI</div>
+      <div className="chat-bubble chat-bubble--assistant">
+        <ThreadPrimitive.If running>
+          <MessagePrimitive.If hasContent={false}>
+            <TypingDots />
+          </MessagePrimitive.If>
+        </ThreadPrimitive.If>
+        <MessagePrimitive.Content components={{ Text: MarkdownText }} />
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+// ── Tool activity bar ──────────────────────────────────────────────────────────
+function ToolActivityBar({ tools }) {
+  if (!tools.length) return null;
+  return (
+    <div className="chat-tool-bar">
+      {tools.map(t => (
+        <span key={t} className="chat-tool-pill">
+          <span className="spin" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
+          {t.replace(/_/g, ' ')}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ── Composer ───────────────────────────────────────────────────────────────────
+function ChatComposer() {
+  return (
+    <div className="chat-composer-wrap">
+      <ComposerPrimitive.Root className="chat-composer-row">
+        <ComposerPrimitive.Input
+          className="chat-composer-input"
+          autoFocus
+          placeholder="Ask anything…"
+          submitOnEnter
+        />
+        <ThreadPrimitive.If running={false}>
+          <ComposerPrimitive.Send className="chat-send-btn" aria-label="Send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+              style={{ transform: 'rotate(-90deg)' }}>
+              <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
+            </svg>
+          </ComposerPrimitive.Send>
+        </ThreadPrimitive.If>
+        <ThreadPrimitive.If running>
+          <ComposerPrimitive.Cancel className="chat-cancel-btn" aria-label="Stop">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+            </svg>
+          </ComposerPrimitive.Cancel>
+        </ThreadPrimitive.If>
+      </ComposerPrimitive.Root>
+    </div>
+  );
+}
+
+// ── Empty state ────────────────────────────────────────────────────────────────
+function EmptyState() {
+  const threadRuntime = useThreadRuntime();
+  const send = useCallback(text => {
+    threadRuntime.append({ role: 'user', content: [{ type: 'text', text }] });
+  }, [threadRuntime]);
+
+  return (
+    <ThreadPrimitive.Empty>
+      <div className="chat-empty">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="1.2" opacity=".18">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        <p className="chat-empty-title">What do you want to explore?</p>
+        <p className="chat-empty-sub">Access to your activity, spaces, notes, and workspace.</p>
+        <div className="chat-suggestions">
+          {SUGGESTIONS.map(s => (
+            <button key={s} className="btn btn-muted btn-sm chat-suggestion" onClick={() => send(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+    </ThreadPrimitive.Empty>
+  );
+}
+
+// ── Thread ─────────────────────────────────────────────────────────────────────
+function ChatThread({ activeTools }) {
+  return (
+    <ThreadPrimitive.Root className="chat-thread">
+      <ThreadPrimitive.Viewport className="chat-viewport">
+        <EmptyState />
+        <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+        <ToolActivityBar tools={activeTools} />
+      </ThreadPrimitive.Viewport>
+      <ThreadPrimitive.ScrollToBottom className="chat-scroll-btn">
+        ↓ Scroll to bottom
+      </ThreadPrimitive.ScrollToBottom>
+      <ChatComposer />
+    </ThreadPrimitive.Root>
+  );
+}
+
+/**
+ * ChatSession — owns the runtime for one session.
+ * Remounting this component (via key) creates a fresh runtime + empty thread.
+ * sessionId/initialMessages are constructor-time values — changing them
+ * requires a remount, not a prop update.
+ */
+function ChatSession({ sessionId, initialMessages, onSessionId, onToolEvent }) {
+  const [activeTools, setActiveTools] = useState([]);
+
+  const handleToolEvent = useCallback(evt => {
+    if (evt.type === 'tool_start')
+      setActiveTools(prev => prev.includes(evt.tool) ? prev : [...prev, evt.tool]);
+    else if (evt.type === 'tool_done')
+      setActiveTools(prev => prev.filter(t => t !== evt.tool));
+  }, []);
+
+  const combinedToolEvent = useCallback(evt => {
+    handleToolEvent(evt);
+    onToolEvent?.(evt);
+  }, [handleToolEvent, onToolEvent]);
+
+  const runtime = useSarthakRuntime({
+    sessionId,
+    onSessionId,
+    onToolEvent: combinedToolEvent,
+    initialMessages,
+  });
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ChatThread activeTools={activeTools} />
+    </AssistantRuntimeProvider>
+  );
+}
+
+// ── Main Chat page ─────────────────────────────────────────────────────────────
 export default function Chat() {
-  const { messages, sessions, sessionId, streaming,
-    loadSession, deleteSession, sendMessage, setMessages, setSessionId, refreshSessions } = useChat();
-  const [input, setInput] = useState('');
-  const bottomRef = useRef();
-  const taRef = useRef();
+  const { err } = useStore();
 
+  // activeSessionId: null = new chat (not yet assigned by server)
+  const [activeSessionId, setActiveSessionId] = useState(loadStored);
+  // sessionKey: bump to force full remount of ChatSession
+  const [sessionKey, setSessionKey] = useState(0);
+  // initialMessages: history to seed on session load (cleared after mount)
+  const [initialMessages, setInitialMessages] = useState([]);
+  // sessions list for sidebar
+  const [sessions, setSessions] = useState([]);
+
+  // Fetch sessions list
+  const refreshSessions = useCallback(async () => {
+    try {
+      const r = await api('/chat/sessions');
+      setSessions(r.sessions || []);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { refreshSessions(); }, [refreshSessions]);
+
+  // Called by ChatSession's runtime when server assigns a session id mid-stream
+  const handleSessionId = useCallback((sid) => {
+    setActiveSessionId(sid);
+    saveStored(sid);
+    refreshSessions();
+  }, [refreshSessions]);
+
+  // Switch to an existing session: load history then remount
+  const openSession = useCallback(async (sid) => {
+    if (!sid) {
+      // New chat
+      setActiveSessionId(null);
+      saveStored(null);
+      setInitialMessages([]);
+      setSessionKey(k => k + 1);
+      return;
+    }
+    try {
+      const r = await api(`/chat/history?session_id=${sid}`);
+      setInitialMessages(r.messages || []);
+    } catch {
+      setInitialMessages([]);
+    }
+    setActiveSessionId(sid);
+    saveStored(sid);
+    setSessionKey(k => k + 1);
+  }, []);
+
+  // Delete a session
+  const deleteSession = useCallback(async (sid) => {
+    try {
+      await api(`/chat/sessions/${sid}`, { method: 'DELETE' });
+      if (sid === activeSessionId) {
+        setActiveSessionId(null);
+        saveStored(null);
+        setInitialMessages([]);
+        setSessionKey(k => k + 1);
+      }
+      refreshSessions();
+    } catch (e) { err(e.message); }
+  }, [activeSessionId, refreshSessions, err]);
+
+  // Auto-restore last session on mount
+  const didRestore = useRef(false);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const send = useCallback(() => {
-    const text = input.trim();
-    if (!text) return;
-    setInput('');
-    if (taRef.current) { taRef.current.style.height = 'auto'; }
-    sendMessage(text);
-  }, [input, sendMessage]);
-
-  const onKey = e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-  };
-
-  const onInput = e => {
-    setInput(e.target.value);
-    const ta = e.target;
-    ta.style.height = 'auto';
-    ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
-  };
-
-  const handleNew = () => { setMessages([]); setSessionId(''); setInput(''); refreshSessions(); };
+    if (didRestore.current) return;
+    didRestore.current = true;
+    const stored = loadStored();
+    if (stored) openSession(stored);
+  }, [openSession]);
 
   return (
     <div className="page">
-      <header className="pg-header">
-        <div className="pg-title-group">
-          <h1 className="pg-title">Chat</h1>
-          <p className="pg-sub">AI assistant with full memory &amp; context</p>
-        </div>
-        <div className="pg-actions">
-          <SessionPicker sessions={sessions} sessionId={sessionId} onSelect={loadSession} />
-          {sessionId && (
-            <button className="btn btn-muted btn-sm"
-              style={{ color: '#f87171', borderColor: 'rgba(248,113,113,.3)' }}
-              onClick={() => { if (confirm('Delete this session?')) deleteSession(sessionId); }}>
-              Delete
-            </button>
-          )}
-          <button className="btn btn-muted btn-sm" onClick={handleNew}>New</button>
-        </div>
-      </header>
-
-      <div id="chat-messages">
-        {messages.length === 0 ? (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
-            justifyContent: 'center', gap: 16, padding: '40px 20px' }}>
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" opacity=".25">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--txt2)', marginBottom: 4 }}>
-                What do you want to explore?
-              </div>
-              <div style={{ fontSize: 12.5, color: 'var(--txt3)', marginBottom: 16 }}>
-                I have access to your activity, spaces, notes, and workspace data.
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center', maxWidth: 440 }}>
-                {SUGGESTIONS.map(s => (
-                  <button key={s} className="btn btn-muted btn-sm"
-                    style={{ fontSize: 12 }}
-                    onClick={() => { setInput(s); taRef.current?.focus(); }}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          messages.map(msg => <Message key={msg.id} msg={msg} />)
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      <div id="chat-bar">
-        <textarea
-          ref={taRef}
-          id="chat-input"
-          rows={1}
-          value={input}
-          onChange={onInput}
-          onKeyDown={onKey}
-          disabled={streaming}
-          placeholder="Ask anything… Enter = send · Shift+Enter = newline"
+      <div className="chat-layout">
+        <SessionSidebar
+          sessions={sessions}
+          activeId={activeSessionId}
+          onSelect={openSession}
+          onNew={() => openSession(null)}
+          onDelete={deleteSession}
         />
-        <button className="btn btn-accent btn-sm" onClick={send} disabled={streaming || !input.trim()}>
-          {streaming ? <span className="spin" style={{ width: 13, height: 13, borderWidth: 2 }} /> : <SendIcon size={13} sw="2.2" />}
-        </button>
+        <div className="chat-main">
+          <ChatSession
+            key={sessionKey}
+            sessionId={activeSessionId}
+            initialMessages={initialMessages}
+            onSessionId={handleSessionId}
+          />
+        </div>
       </div>
     </div>
   );

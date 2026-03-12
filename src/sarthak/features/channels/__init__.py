@@ -37,8 +37,10 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from sarthak.core.logging import get_logger
 from sarthak.features.ai.deps import OrchestratorDeps, OrchestratorResult
 
+log = get_logger(__name__)
 
 # ── Agent factory ─────────────────────────────────────────────────────────────
 
@@ -196,8 +198,12 @@ async def stream_dispatch(
         pool=pool, cwd=cwd, provider=provider, model_name=model_name,
         allow_web=allow_web, allow_shell=allow_shell,
     )
-    async with agent.run_stream(question, deps=deps, message_history=history) as stream:
-        async for partial in stream.stream_output(debounce_by=0.05):
-            reply = partial.reply if partial.reply else ""
-            if reply:
-                yield reply
+    try:
+        async with agent.run_stream(question, deps=deps, message_history=history) as stream:
+            async for partial in stream.stream_output(debounce_by=0.05):
+                reply = partial.reply if partial.reply else ""
+                if reply:
+                    yield reply
+    except Exception as exc:
+        log.error("stream_dispatch_failed", error=str(exc))
+        raise

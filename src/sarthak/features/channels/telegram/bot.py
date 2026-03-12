@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+import warnings
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1712,6 +1713,13 @@ async def run_bot(cfg: dict[str, Any]) -> None:
 
     all_run_keys = list(_CTX_HANDLERS.keys()) + list(_RUN_HANDLERS.keys())
 
+    # per_message=False is intentional (state tracked per-user/chat, not per-message).
+    # Suppress the PTB noise about CallbackQueryHandler not being tracked per-message.
+    warnings.filterwarnings(
+        "ignore",
+        message=".*per_message=False.*CallbackQueryHandler.*",
+        category=UserWarning,
+    )
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("start",   cmd_start),

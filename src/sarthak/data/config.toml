@@ -152,14 +152,6 @@ port = 4848
 enabled = true
 transport = "stdio"
 
-[notifications]
-provider = "dunst"            # uses notify-send
-enabled = true
-# Trigger a dunst alert if no coding detected in N minutes during work hours
-idle_coding_alert_minutes = 120
-work_hours_start = "09:00"
-work_hours_end = "22:00"
-
 [telegram]
 enabled = false
 # bot_token = "ENC:..."   # encrypt with: sarthak encrypt <your-token>

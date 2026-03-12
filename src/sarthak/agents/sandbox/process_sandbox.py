@@ -61,10 +61,7 @@ async def run_shell(
     )
 
     try:
-        proc = await asyncio.wait_for(
-            _launch(command, cwd, safe_env, cfg),
-            timeout=cfg.wall_timeout,
-        )
+        proc = await _launch(command, cwd, safe_env, cfg)
     except asyncio.TimeoutError:
         emit("agent_timeout", agent_id=cfg.agent_id, phase="shell", timeout=cfg.wall_timeout)
         raise ShellTimeout(
@@ -92,24 +89,32 @@ async def _launch(
     Spawn the subprocess with rlimits (POSIX) or plain limits (Windows).
     Returns (stdout_text, stderr_text).
     """
-    preexec = _make_preexec(cfg) if cfg.rlimits_available else None
-
-    proc = await asyncio.create_subprocess_shell(
-        command,
+    # preexec_fn is POSIX-only; never pass it on Windows (causes TypeError)
+    kwargs: dict = dict(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=env,
-        preexec_fn=preexec,
     )
+    if cfg.rlimits_available:
+        kwargs["preexec_fn"] = _make_preexec(cfg)
+
+    proc = await asyncio.create_subprocess_shell(command, **kwargs)
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(
             proc.communicate(), timeout=cfg.wall_timeout
         )
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        # Drain pipes so the process can exit cleanly
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception:
+            pass
         raise
 
     return (

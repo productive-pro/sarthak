@@ -14,7 +14,6 @@ from sarthak.features.ai.tools.shell import tool_run_shell, is_safe_command
 from sarthak.features.ai.tools.system import (
     tool_service_status,
     tool_restart_service,
-    tool_send_notification,
 )
 from sarthak.features.ai.tools.skills import (
     tool_list_skills,
@@ -43,7 +42,7 @@ __all__ = [
     # shell
     "tool_run_shell", "is_safe_command",
     # system
-    "tool_service_status", "tool_restart_service", "tool_send_notification",
+    "tool_service_status", "tool_restart_service",
     # skills
     "tool_list_skills", "tool_read_skill", "tool_save_skill", "tool_delete_skill",
     # spaces

@@ -78,7 +78,7 @@ LATEST_MODELS: dict[Provider, str] = {
     Provider.GROQ:           "llama-3.3-70b-versatile",
     Provider.OLLAMA:         "gemma3:12b",
     Provider.OPENROUTER:     "anthropic/claude-opus-4-6",
-    Provider.GITHUB_COPILOT: "claude-opus-4.6",
+    Provider.GITHUB_COPILOT: "claude-opus-4-6",
     Provider.CUSTOM:         "",
 }
 

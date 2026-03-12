@@ -43,6 +43,8 @@ export default defineConfig({
 
           // State management
           'vendor-infra': ['zustand'],
+          // assistant-ui runtime primitives
+          'vendor-assistant-ui': ['@assistant-ui/react', '@assistant-ui/react-markdown'],
         },
       },
     },

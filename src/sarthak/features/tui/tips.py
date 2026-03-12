@@ -161,7 +161,7 @@ class TipsTab(Widget):
 
         if not tips:
             msg = "No tips match your search." if filter_text else (
-                "No tips yet.\n\nClick 'Worth it!' on a Dunst notification to save one."
+                "No tips yet."
             )
             scroll.mount(Label(msg, classes="dim"))
             return

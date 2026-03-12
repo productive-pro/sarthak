@@ -1,4 +1,4 @@
-"""System tools — service status, restart, desktop notifications."""
+"""System tools — service status and restart."""
 from __future__ import annotations
 
 import asyncio
@@ -46,15 +46,3 @@ async def tool_restart_service(service: str) -> str:
     err = stderr.decode().strip()
     return f"Restarted {service}." + (f" Warning: {err}" if err else "")
 
-
-async def tool_send_notification(title: str, body: str) -> str:
-    """Send a desktop notification via dunstify (non-blocking)."""
-    try:
-        await asyncio.create_subprocess_exec(
-            "dunstify", "-a", "Sarthak", title, body,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        return "Notification sent."
-    except Exception as exc:
-        return f"Notification failed: {exc}"

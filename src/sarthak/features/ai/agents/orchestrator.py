@@ -22,7 +22,7 @@ from sarthak.features.ai.skills import list_skills, build_context_block
 from sarthak.features.ai.tools import (
     tool_query_activity, tool_get_summary, tool_get_tips, tool_save_tip,
     tool_run_shell,
-    tool_service_status, tool_restart_service, tool_send_notification,
+    tool_service_status, tool_restart_service,
     tool_list_skills, tool_read_skill, tool_save_skill, tool_delete_skill,
     tool_spaces_session, tool_spaces_status, tool_spaces_setup,
     tool_spaces_evaluate, tool_spaces_init, tool_spaces_context,
@@ -133,10 +133,6 @@ def build(provider: str, model_name: str) -> Agent[OrchestratorDeps, Orchestrato
     @agent.tool_plain
     async def restart_service(service: str) -> str:
         return await tool_restart_service(service)
-
-    @agent.tool_plain
-    async def send_notification(title: str, body: str) -> str:
-        return await tool_send_notification(title, body)
 
     # ── Spaces ────────────────────────────────────────────────────────────────
 

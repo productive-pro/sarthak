@@ -1,7 +1,7 @@
 
 [project]
 name = "sarthak"
-version = "0.0.3"
+dynamic = ["version"]
 description = "Privacy-first self-analytics intelligence platform for Linux, macOS, and Windows"
 readme = "README.md"
 license = {text = "AGPL-3.0-or-later"}
@@ -54,6 +54,8 @@ dependencies = [
     "markitdown[all]",
     "pdfminer.six",
     "platformdirs",
+    "neonize",
+    "qrcode",
 ]
 
 [project.urls]
@@ -116,8 +118,11 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.sdist]
 # Include react_dist in the source tarball so wheel-from-sdist works too
@@ -149,7 +154,7 @@ testpaths = ["tests"]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version_provider = "pep621"
+version_provider = "scm"
 tag_format = "v$version"
 update_changelog_on_bump = true
 changelog_file = "docs/changelog.md"

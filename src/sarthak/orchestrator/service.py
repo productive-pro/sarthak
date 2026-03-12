@@ -212,7 +212,23 @@ async def _run_web(cfg: dict[str, Any], stop: asyncio.Event) -> None:
     serve_task = asyncio.create_task(server.serve())
     await stop.wait()
     server.should_exit = True
-    await serve_task
+    try:
+        await asyncio.wait_for(asyncio.shield(serve_task), timeout=8.0)
+    except asyncio.TimeoutError:
+        log.warning("web_shutdown_timeout", hint="forcing exit")
+        server.force_exit = True
+        serve_task.cancel()
+        await asyncio.gather(serve_task, return_exceptions=True)
+
+
+async def _run_neonize_bot(cfg: dict[str, Any], stop: asyncio.Event) -> None:
+    """Start the neonize WhatsApp bot and keep it alive until stop is set."""
+    from sarthak.features.channels.whatsapp.neonize_bot import (
+        start_neonize_bot, stop_neonize_bot,
+    )
+    await start_neonize_bot()
+    await stop.wait()
+    await stop_neonize_bot()
 
 
 # ── Service registry ──────────────────────────────────────────────────────────
@@ -234,10 +250,18 @@ _SERVICES = [
         _run_agent_scheduler,
         lambda cfg: True,
     ),
+    (
+        "whatsapp_neonize",
+        _run_neonize_bot,
+        lambda cfg: (
+            cfg.get("whatsapp", {}).get("enabled", False)
+            and cfg.get("whatsapp", {}).get("mode", "meta") == "qr"
+        ),
+    ),
 ]
 
 # Services whose crash/exit must NOT stop the entire orchestrator
-_ISOLATED_SERVICES = {"telegram"}
+_ISOLATED_SERVICES = {"telegram", "whatsapp_neonize"}
 
 
 # ── Supervisor ────────────────────────────────────────────────────────────────
@@ -246,16 +270,20 @@ async def _supervise(cfg: dict[str, Any]) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
 
+    def _handle_signal(sig_name: str) -> None:
+        if stop.is_set():
+            return  # already shutting down — ignore further signals
+        log.info("signal_received", signal=sig_name)
+        stop.set()
+
     # Windows doesn't support add_signal_handler; use signal.signal instead
     if _IS_WINDOWS:
         import signal as _sig
         for sig in (_sig.SIGTERM, _sig.SIGINT):
-            _sig.signal(sig, lambda s, f: stop.set())
+            _sig.signal(sig, lambda s, f: _handle_signal("SIGINT"))
     else:
         for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.add_signal_handler(sig, lambda s=sig.name: (
-                log.info("signal_received", signal=s), stop.set()
-            ))
+            loop.add_signal_handler(sig, lambda s=sig.name: _handle_signal(s))
 
     tasks: dict[asyncio.Task, str] = {}
     for name, runner, enabled_check in _SERVICES:
@@ -307,12 +335,12 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        # Ignore further SIGINT during interpreter/thread cleanup so that a
-        # second Ctrl-C while Python joins residual threads (e.g. uvicorn's
-        # thread pool) does not produce the noisy "Exception ignored in
-        # threading._shutdown" traceback.
+        # Ignore further SIGINT during interpreter/thread cleanup.
         if not _IS_WINDOWS:
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # Force-exit to terminate any residual uvicorn thread-pool threads that
+    # would otherwise block Python's interpreter shutdown indefinitely.
+    os._exit(0)
 
 
 if __name__ == "__main__":

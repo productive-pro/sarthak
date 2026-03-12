@@ -161,7 +161,7 @@ def get_hyprland_socket() -> str:
         raise RuntimeError(
             "HYPRLAND_INSTANCE_SIGNATURE not set — is Hyprland running?"
         )
-    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
     return f"{xdg_runtime}/hypr/{sig}/.socket2.sock"
 
 

@@ -60,6 +60,28 @@ def _build_env_pattern() -> re.Pattern | None:
     return re.compile("|".join(values))
 
 
+# ── Cached env pattern ───────────────────────────────────────────────────────
+# Rebuilt only when the set of SARTHAK_* env-var values changes.
+_ENV_PAT_CACHE: tuple[frozenset[str], re.Pattern | None] = (frozenset(), None)
+
+
+def _get_env_pattern() -> re.Pattern | None:
+    """Return cached env-var pattern, rebuilding only when env changes."""
+    global _ENV_PAT_CACHE
+    current_vals = frozenset(
+        v for k, v in os.environ.items()
+        if k.startswith("SARTHAK_") and len(v) > 8
+    )
+    cached_vals, pat = _ENV_PAT_CACHE
+    if current_vals != cached_vals:
+        if current_vals:
+            pat = re.compile("|".join(re.escape(v) for v in current_vals))
+        else:
+            pat = None
+        _ENV_PAT_CACHE = (current_vals, pat)
+    return pat
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def scrub(text: str, agent_id: str = "") -> tuple[str, int]:
@@ -76,7 +98,7 @@ def scrub(text: str, agent_id: str = "") -> tuple[str, int]:
         result, n = pattern.subn(replacement, result)
         total += n
 
-    env_pat = _build_env_pattern()
+    env_pat = _get_env_pattern()
     if env_pat:
         result, n = env_pat.subn("[REDACTED:env_secret]", result)
         total += n
