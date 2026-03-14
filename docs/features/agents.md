@@ -30,11 +30,20 @@ Tick **Send results to Telegram** if you want the output delivered to your phone
 
 Sarthak reads your description, decides on a schedule and the right tools, and saves the agent. You can see and run it immediately from the Agents page.
 
+Under the hood, each saved agent becomes an `AgentSpec` with:
+
+- a cron schedule
+- a prompt
+- a tool list such as `web_search`, `shell`, `file_read`, `file_write`, or `http_fetch`
+- an optional sandbox policy with per-run limits
+
+The scheduler checks due agents every 60 seconds and starts runs in the background.
+
 ---
 
 ## Built-in agents
 
-Sarthak includes four agents that run automatically from the moment you start:
+Sarthak includes five built-in agents that are registered automatically:
 
 | Agent | When | What it does |
 |:---|:---|:---|
@@ -42,8 +51,39 @@ Sarthak includes four agents that run automatically from the moment you start:
 | SRS Review Push | Every morning | Lists the concepts due for spaced repetition review today |
 | Recommendations | Every hour | Updates the suggestions for what to study next based on your recent sessions |
 | Weekly Digest | Every Sunday | A full week-in-review: focus time, concepts touched, test scores, and recommendations |
+| Workspace Analyser | Every 30 minutes | Re-checks Spaces, refreshes `Optimal_Learn.md`, and updates lightweight recommendations when the workspace changed |
 
 These can be paused but not deleted.
+
+---
+
+## Space-scoped agents
+
+Agents can be created inside a specific Space. Space-scoped agents have access to that Space's roadmap, learner profile, and notes as context. Open a Space → click the **Agents** panel button in the top-right toolbar to manage agents for that Space.
+
+Space-scoped agent specs are stored under `<space_dir>/.spaces/agents/` rather than the global `~/.sarthak_ai/agents/`.
+
+Global agents live under `~/.sarthak_ai/agents/` and can span multiple Spaces.
+
+---
+
+## Sandbox and safety
+
+Every agent run is wrapped by the sandbox layer before the LLM executes it.
+
+- Shell access is disabled unless the agent was created with the `shell` tool
+- File access is limited to allowed read and write roots
+- Output is scrubbed for secrets before it is stored or sent
+- Run time, memory, CPU, and web-call counts are capped
+
+The default limits come from the agent scope and can be overridden in `config.toml` under `agents.sandbox.system` and `agents.sandbox.space`, or per agent through its saved sandbox policy.
+
+Typical defaults:
+
+- system agents: 120 second wall timeout
+- space agents: 300 second wall timeout
+- output cap: 64 KB
+- max web calls: 10 per run
 
 ---
 
@@ -54,3 +94,15 @@ Agents can deliver results to Telegram so you get updates on your phone without 
 To set it up: go to **Config** in the sidebar, find the Telegram section, and add your bot token and chat ID. Enable Telegram there and it will be available as a delivery option when creating agents.
 
 If you need to create a Telegram bot, search for **@BotFather** on Telegram and follow the instructions — it takes about two minutes.
+
+---
+
+## Where agent data is stored
+
+| Path | Contents |
+|:---|:---|
+| `~/.sarthak_ai/agents/<agent_id>/spec.json` | Global agent definition |
+| `~/.sarthak_ai/agents/<agent_id>/runs/` | Global run history |
+| `~/.sarthak_ai/agents/registry.json` | Global agent registry |
+| `<space_dir>/.spaces/agents/<agent_id>/spec.json` | Space-scoped agent definition |
+| `<space_dir>/.spaces/agents/<agent_id>/runs/` | Space-scoped run history |

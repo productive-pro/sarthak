@@ -3,33 +3,45 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 
-from sarthak.core.logging import get_logger
 from sarthak.core.constants import (
     SAFE_SHELL_PREFIXES,
     SHELL_BLOCK_PATTERNS,
-    SHELL_TIMEOUT_SECONDS,
     SHELL_OUTPUT_MAX_CHARS,
+    SHELL_TIMEOUT_SECONDS,
 )
+from sarthak.core.logging import get_logger
 
 log = get_logger(__name__)
 
 
+def _parse_command(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return []
+
+
 def is_safe_command(command: str) -> bool:
-    if not command.strip():
+    argv = _parse_command(command)
+    if not argv:
         return False
     if any(p in command for p in SHELL_BLOCK_PATTERNS):
         return False
-    return os.path.basename(command.strip().split()[0]) in SAFE_SHELL_PREFIXES
+    return os.path.basename(argv[0]) in SAFE_SHELL_PREFIXES
 
 
 async def tool_run_shell(command: str, cwd: str | None = None) -> str:
     """Run a safe read-only shell command. Returns stdout+stderr (truncated)."""
     if not is_safe_command(command):
         return f"Command not allowed: '{command}'. Only read-only commands are permitted."
+    argv = _parse_command(command)
+    if not argv:
+        return "Command parsing failed."
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd or os.path.expanduser("~"),

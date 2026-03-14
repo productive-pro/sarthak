@@ -108,7 +108,12 @@ Users define agents in plain English. `creator.py` parses the description via LL
 | `<space_dir>/.spaces/sarthak.db` | AI curriculum — chapters, topics, concepts |
 | `<space_dir>/.spaces/roadmap.json` | Session history, XP, streak |
 | `<space_dir>/.spaces/Optimal_Learn.md` | Workspace analysis written after each session |
-| `<space_dir>/.spaces/chroma.db/` | RAG vector index |
+| `<space_dir>/.spaces/chroma.db/` | RAG vector index (sqlite-vec by default) |
+| `<space_dir>/.spaces/SOUL.md` | Agent identity for this domain |
+| `<space_dir>/.spaces/USER.md` | Live learner state snapshot |
+| `<space_dir>/.spaces/HEARTBEAT.md` | SRS due counts + daily checks |
+| `<space_dir>/.spaces/MEMORY.md` | Long-term learner patterns (weekly LLM distill) |
+| `<space_dir>/.spaces/memory/YYYY-MM-DD.md` | Daily session logs |
 
 ---
 
@@ -171,11 +176,17 @@ The interactive wizard walks you through selecting an AI provider, entering your
 ### Start Sarthak
 
 ```bash
-# Start everything: web UI + agent scheduler + background services
+# Install as a background service and start (recommended)
 sarthak service install
 ```
 
 Then open **[http://localhost:4848](http://localhost:4848)** in your browser.
+
+To start without registering a service:
+
+```bash
+sarthak orchestrator
+```
 
 ### Check status
 

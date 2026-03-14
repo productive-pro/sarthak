@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS user_activity (
 CREATE INDEX IF NOT EXISTS ua_ts        ON user_activity (ts DESC);
 CREATE INDEX IF NOT EXISTS ua_space_ts  ON user_activity (space_dir, ts DESC);
 CREATE INDEX IF NOT EXISTS ua_concept   ON user_activity (space_dir, concept_title);
+CREATE INDEX IF NOT EXISTS ua_concept_ts ON user_activity (space_dir, concept_title, ts DESC);
 CREATE INDEX IF NOT EXISTS ua_type      ON user_activity (space_dir, activity_type, ts DESC);
 
 -- Safe migration: add session_id index if missing (helps chat/session lookups)

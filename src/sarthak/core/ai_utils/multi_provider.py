@@ -326,7 +326,7 @@ def _build_custom(pc: ProviderConfig, model_name: str) -> Any:
     custom_cfg = cfg.get("ai", {}).get("custom", {})
     compat   = str(custom_cfg.get("compat", "openai")).strip().lower()
     base_url = str(custom_cfg.get("base_url", "")).strip()
-    # load_config() already merges + decrypts secrets.toml, so api_key is plaintext here
+    # load_config() already decrypts config.toml values, so api_key is plaintext here
     api_key = str(custom_cfg.get("api_key", "")).strip() or os.getenv("CUSTOM_API_KEY", "")
 
     if not base_url:

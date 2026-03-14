@@ -1,0 +1,9 @@
+{
+  "id": "data_science",
+  "label": "Data Science & AI",
+  "desc": "ML from first principles, PyTorch, MLflow, production pipelines",
+  "expert_tip": "Experts derive gradients by hand before touching frameworks.",
+  "tools": ["polars", "duckdb", "marimo", "mlflow", "ruff"],
+  "folders": ["notebooks", "src", "data", "experiments", "models", "reports"],
+  "color": "#6366f1"
+}

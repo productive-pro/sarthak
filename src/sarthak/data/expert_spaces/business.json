@@ -1,0 +1,9 @@
+{
+  "id": "business",
+  "label": "Business Analytics",
+  "desc": "Product analytics, A/B testing, cohort analysis, strategy",
+  "expert_tip": "Measure with metrics trees; never optimise vanity metrics.",
+  "tools": ["duckdb", "plotly", "streamlit"],
+  "folders": ["dashboards", "data", "reports", "notes"],
+  "color": "#84cc16"
+}

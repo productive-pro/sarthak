@@ -213,3 +213,26 @@ device    = "CPU"        # --ov-e-device: CPU | GPU | NPU
 beam_size = 5            # --beam-size: 1 = fastest, 5 = whisper default
 threads   = 0            # -t: CPU threads (0 = whisper-cli default)
 language  = "auto"       # -l: spoken language code (en, fr, de …) or "auto"
+
+[whatsapp]
+# ── neonize QR-login bot ─────────────────────────────────────────────────────
+enabled  = false
+mode     = "qr"           # only mode supported: qr (personal account via neonize)
+jid      = ""             # set automatically after QR scan (your phone number)
+
+# ── Behaviour ────────────────────────────────────────────────────────────────
+push_name         = "Sarthak"   # display name shown to contacts
+allow_groups      = false       # accept messages from group chats
+send_presence     = false       # appear online/available during active sessions
+send_read_receipt = true        # mark messages read after replying
+auto_reject_calls = true        # auto-reject incoming calls (prevents bot hang)
+
+# ── Reconnect backoff ────────────────────────────────────────────────────────
+reconnect_backoff_init = 5      # initial wait (s) before reconnect attempt
+reconnect_backoff_max  = 300    # max wait (s) between reconnect attempts
+
+# ── QR session ───────────────────────────────────────────────────────────────
+session_timeout = 120           # seconds to wait for QR scan in configure wizard
+
+# ── Network ──────────────────────────────────────────────────────────────────
+proxy = ""                      # HTTP/SOCKS5 proxy URL, e.g. socks5://127.0.0.1:9050

@@ -5,7 +5,7 @@ Strips sensitive material from agent prompts and run outputs before
 they are persisted or forwarded.
 
 Patterns scrubbed:
-  - ENC:<base64>          encrypted credential tokens from secrets.toml
+  - ENC:<base64>          encrypted credential tokens from config.toml
   - master.key path refs  absolute paths containing .sarthak_ai/master.key
   - Raw API key patterns  sk-..., Bearer <token>, api_key=...
   - SARTHAK_* env values  any env var starting with SARTHAK_

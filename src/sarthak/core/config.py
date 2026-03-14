@@ -87,10 +87,6 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     if not general.get("data_dir"):
         general["data_dir"] = str(_default_data_dir())
 
-    # Merge encrypted secrets (if present) — secrets.toml overrides config.toml
-    secrets_path = config_path.parent / "secrets.toml"
-    _merge_into(cfg, _load_secrets(secrets_path))
-
     with _CONFIG_CACHE_LOCK:
         _CONFIG_CACHE[config_path] = (now, mtime, cfg)
     return cfg
@@ -114,23 +110,6 @@ def _expand_paths(cfg: dict[str, Any]) -> dict[str, Any]:
         else:
             result[k] = v
     return result
-
-
-def _merge_into(base: dict[str, Any], override: dict[str, Any]) -> None:
-    """Recursively merge override into base (mutates base)."""
-    for key, val in override.items():
-        if isinstance(val, dict) and isinstance(base.get(key), dict):
-            _merge_into(base[key], val)
-        else:
-            base[key] = val
-
-
-def _load_secrets(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
-    return _decrypt_tree(data)
 
 
 def _decrypt_tree(value: Any) -> Any:

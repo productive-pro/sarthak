@@ -1,0 +1,9 @@
+{
+  "id": "custom",
+  "label": "Custom Domain",
+  "desc": "Any topic — philosophy, spirituality, history, music, language",
+  "expert_tip": "AI will collaboratively design your space from scratch.",
+  "tools": [],
+  "folders": ["notes", "resources", "reflections", "projects"],
+  "color": "#f472b6"
+}

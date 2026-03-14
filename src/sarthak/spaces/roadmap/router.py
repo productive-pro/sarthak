@@ -30,6 +30,7 @@ from sarthak.spaces.notes import (
 from sarthak.spaces.roadmap.quicktest import create_quicktest as create_quicktest_record
 
 from sarthak.core.logging import get_logger
+from sarthak.agents.models import AgentPatch
 from sarthak.storage.activity_store import record as _record_activity
 
 from .db import RoadmapDB
@@ -1495,9 +1496,9 @@ async def delete_space_agent(space: str, agent_id: str) -> dict:
 
 
 @roadmap_router.patch("/{space}/agents/{agent_id}")
-async def patch_space_agent(space: str, agent_id: str, body: dict = Body(...)) -> dict:
-    from sarthak.agents.store import update_agent
-    spec = update_agent(agent_id, **body)
+async def patch_space_agent(space: str, agent_id: str, body: AgentPatch = Body(...)) -> dict:
+    from sarthak.agents.store import patch_agent
+    spec = patch_agent(agent_id, body)
     if not spec:
         raise HTTPException(404, "Agent not found")
     return spec.model_dump()

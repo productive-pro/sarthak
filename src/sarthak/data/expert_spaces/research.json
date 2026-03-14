@@ -1,0 +1,9 @@
+{
+  "id": "research",
+  "label": "Research & Academia",
+  "desc": "Experiment design, reproducibility, statistical inference",
+  "expert_tip": "Pre-register your hypothesis before collecting data.",
+  "tools": ["dvc", "scipy", "jupyter"],
+  "folders": ["papers", "experiments", "notes", "data", "reports"],
+  "color": "#06b6d4"
+}

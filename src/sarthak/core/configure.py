@@ -21,7 +21,6 @@ import httpx
 from questionary import Style
 
 BASE_DIR = Path.home() / ".sarthak_ai"
-SECRETS_FILE = BASE_DIR / "secrets.toml"
 MASTER_KEY_FILE = BASE_DIR / "master.key"
 
 # ── Palette (ANSI for click.echo) ─────────────────────────────────────────────
@@ -222,14 +221,9 @@ def _decrypt_if_needed(value: str) -> str:
 def _resolve_api_key_from_data(toml_data: dict, secrets_data: dict, provider: str) -> str:
     canon = canonical_provider(provider)
     key_path = ["ai", canon, "api_key"]
-    # config.toml is the primary store — may hold an ENC: encrypted value
-    key = _gv(toml_data, key_path, "")
+    key = _get_secret(toml_data, key_path)
     if key:
-        return _decrypt_if_needed(key)
-    # secrets.toml fallback (migration / legacy)
-    key = _gv(secrets_data, key_path, "")
-    if key:
-        return _decrypt_if_needed(key)
+        return key
     entry = provider_entry(canon)
     if entry.env_key:
         env_val = os.getenv(entry.env_key, "").strip()
@@ -365,9 +359,7 @@ def _configure_custom_provider(toml_data: dict, secrets_data: dict) -> tuple[boo
     dim(f"API key {key_display}  — leave blank to keep existing or skip if not required")
     new_key = q_secret("API key", style=_STYLE).ask()
     if new_key:
-        from sarthak.storage.encrypt import encrypt_string
-        _ensure_master_key()
-        _sv(toml_data, ["ai", "custom", "api_key"], encrypt_string(new_key))
+        _set_secret(toml_data, ["ai", "custom", "api_key"], new_key)
         toml_changed = True
         ok("API key saved (encrypted in config.toml)")
 
@@ -443,6 +435,17 @@ def _sv(toml_data: dict, path: list[str], value) -> None:
         cur[key] = s
 
 
+def _get_secret(toml_data: dict, path: list[str]) -> str:
+    return _decrypt_if_needed(_gv(toml_data, path, ""))
+
+
+def _set_secret(toml_data: dict, path: list[str], value: str) -> None:
+    from sarthak.storage.encrypt import encrypt_string
+
+    _ensure_master_key()
+    _sv(toml_data, path, encrypt_string(value) if value else "")
+
+
 # ── Model selector ────────────────────────────────────────────────────────────
 
 def _normalize_catalog(provider: str, catalog: list[str]) -> list[str]:
@@ -482,9 +485,7 @@ def _ensure_provider_auth(toml_data: dict, secrets_data: dict, provider: str) ->
     if not new_val:
         return False
     key_path = ["ai", canon, "api_key"]
-    from sarthak.storage.encrypt import encrypt_string
-    _ensure_master_key()
-    _sv(toml_data, key_path, encrypt_string(new_val))
+    _set_secret(toml_data, key_path, new_val)
     ok(f"{label} API key set (saved to config.toml, encrypted)")
     return True  # toml_dirty
 
@@ -680,24 +681,12 @@ def _ensure_master_key() -> None:
     ok("Master key generated (stored in master.key)")
 
 
-def _load_secrets() -> dict:
-    return tomlkit.parse(SECRETS_FILE.read_text())
-
-
-def _save_secrets(secrets_data: dict) -> None:
-    SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SECRETS_FILE.write_text(tomlkit.dumps(secrets_data))
-    os.chmod(SECRETS_FILE, 0o600)
-
-
 def _section_api_keys(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
     """Edit miscellaneous API keys interactively. Returns (toml_dirty, secrets_dirty).
 
     Provider API keys (Gemini, OpenAI, etc.) are set during model selection.
     This section handles other secrets (e.g. Telegram token).
     """
-    from sarthak.storage.encrypt import encrypt_string
-
     toml_dirty = False
     secrets_dirty = False
     _ensure_master_key()
@@ -707,7 +696,7 @@ def _section_api_keys(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
         dim("Provider AI keys are set during model selection — use 'Models & Providers'.")
         choices = []
         for name, path, hint, _encrypt in _SECRET_FIELDS:
-            val = _gv(secrets_data, path, "")
+            val = _get_secret(toml_data, path)
             status = "(set)" if val else "(unset)"
             choices.append(questionary.Choice(f"  {name:<22} {status}", value=".".join(path)))
         choices.append(questionary.Separator())
@@ -721,7 +710,7 @@ def _section_api_keys(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
         if not entry:
             continue
         name, path, hint, encrypt_val = entry
-        cur = _gv(secrets_data, path, "")
+        cur = _get_secret(toml_data, path)
         dim(f"Format hint: {hint}")
 
         new_val = q_secret(name, style=_STYLE).ask()
@@ -730,10 +719,11 @@ def _section_api_keys(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
             continue
 
         if encrypt_val and new_val:
-            new_val = encrypt_string(new_val)
-
-        _sv(secrets_data, path, new_val)
-        secrets_dirty = True
+            _set_secret(toml_data, path, new_val)
+            toml_dirty = True
+        else:
+            _sv(toml_data, path, new_val)
+            toml_dirty = True
         ok(f"{name} updated")
 
     return toml_dirty, secrets_dirty
@@ -785,8 +775,6 @@ def _section_general(toml_data: dict) -> bool:
 
 def _section_telegram(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
     """Configure Telegram bot. Returns (toml_dirty, secrets_dirty)."""
-    from sarthak.storage.encrypt import encrypt_string
-
     toml_dirty = False
     secrets_dirty = False
 
@@ -819,9 +807,8 @@ def _section_telegram(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
 
     new_token = q_secret("Bot token (blank = keep existing)", style=_STYLE).ask()
     if new_token:
-        _ensure_master_key()
-        _sv(secrets_data, ["telegram", "bot_token"], encrypt_string(new_token))
-        secrets_dirty = True
+        _set_secret(toml_data, ["telegram", "bot_token"], new_token)
+        toml_dirty = True
         ok("Telegram token updated")
 
     cur_timeout = _gv(toml_data, ["telegram", "timeout_seconds"], "60")
@@ -849,22 +836,23 @@ def _configure_whatsapp_qr(toml_data: dict) -> bool:
 
     try:
         import qrcode  # type: ignore
-        from neonize.client import NewClient  # type: ignore
-        from neonize.events import ConnectedEv  # type: ignore
+        from neonize.client import ClientFactory  # type: ignore
+        from neonize.events import ConnectedEv, OfflineSyncCompletedEv  # type: ignore
     except ImportError as e:
         err(f"Missing dependency: {e}")
         info("Install with: pip install neonize qrcode")
         return False
 
     import threading
-    from sarthak.features.channels.whatsapp import SESSION_NAME as _SESSION_NAME
+    from sarthak.features.channels.whatsapp import SESSION_DB as _SESSION_DB
 
     result: dict = {}
     done = threading.Event()
-    client = NewClient(_SESSION_NAME)
+    sync_done = threading.Event()
+    factory = ClientFactory(database_name=_SESSION_DB)
+    client = factory.new_client(uuid="sarthak-bot")
 
     def on_qr(_, data: bytes) -> None:
-        # Render QR as ASCII directly in the terminal — no PNG, no browser
         qr = qrcode.QRCode(border=1)
         qr.add_data(data.decode("utf-8", errors="replace"))
         qr.make(fit=True)
@@ -883,22 +871,37 @@ def _configure_whatsapp_qr(toml_data: dict) -> bool:
             result["jid"] = ""
         done.set()
 
+    @client.event(OfflineSyncCompletedEv)
+    def on_sync_done(_cl, _ev) -> None:
+        sync_done.set()
+
     info("Starting neonize — QR code will appear momentarily…")
     connect_thread = threading.Thread(target=client.connect, daemon=True)
     connect_thread.start()
 
-    connected = done.wait(timeout=120)
+    from sarthak.core.config import load_config as _load_cfg
+    _timeout = int(_load_cfg().get("whatsapp", {}).get("session_timeout", 120))
+    connected = done.wait(timeout=_timeout)
+
+    if not connected:
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+        err(f"QR login timed out ({_timeout} s). Try again or increase whatsapp.session_timeout in config.")
+        return False
+
+    jid = result.get("jid", "")
+    ok(f"WhatsApp paired  [{jid}]")
+    info("Waiting for app state sync (up to 45 s) — do not close this window…")
+    sync_done.wait(timeout=45)
+    ok("Sync complete." if sync_done.is_set() else "Sync timeout — proceeding anyway.")
+
     try:
         client.disconnect()
     except Exception:
         pass
 
-    if not connected:
-        err("QR login timed out (120 s). Try again.")
-        return False
-
-    jid = result.get("jid", "")
-    ok(f"WhatsApp connected  [{jid}]")
     _sv(toml_data, ["whatsapp", "jid"],     jid)
     _sv(toml_data, ["whatsapp", "mode"],    "qr")
     _sv(toml_data, ["whatsapp", "enabled"], True)
@@ -1084,7 +1087,7 @@ def _section_channels(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
         # Telegram status
         tg_enabled = _gv(toml_data, ["telegram", "enabled"], "false").lower()
         tg_allowed = _gv(toml_data, ["telegram", "allowed_user_id"], "")
-        tg_token   = _gv(secrets_data, ["telegram", "bot_token"], "")
+        tg_token   = _get_secret(toml_data, ["telegram", "bot_token"])
         tg_status  = f"{'on' if tg_enabled == 'true' else 'off'}, user: {tg_allowed or '-'}, token: {'set' if tg_token else 'unset'}"
 
         # WhatsApp status
@@ -1774,16 +1777,15 @@ def _section_database(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
             # Configure connection fields for non-sqlite backends
             fields = _BACKEND_FIELDS.get(new_db, [])
             for label, path, hint, is_secret in fields:
-                cur_val = _gv(toml_data if not is_secret else secrets_data, path, "")
+                cur_val = _get_secret(toml_data, path) if is_secret else _gv(toml_data, path, "")
                 dim(hint)
                 val = (q_secret if is_secret else q_text)(label, default=cur_val, style=_STYLE).ask()
                 if val and val != cur_val:
-                    _sv(secrets_data if is_secret else toml_data, path, val)
-                    (secrets_dirty := True) if is_secret else (toml_dirty := True)  # type: ignore[func-returns-value]
-                    if not is_secret:
-                        toml_dirty = True
+                    if is_secret:
+                        _set_secret(toml_data, path, val)
                     else:
-                        secrets_dirty = True
+                        _sv(toml_data, path, val)
+                    toml_dirty = True
                     ok(f"{label} set")
 
         # ── Vector ──────────────────────────────────────────────────────────
@@ -1810,16 +1812,15 @@ def _section_database(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
 
             fields = _BACKEND_FIELDS.get(new_vec, [])
             for label, path, hint, is_secret in fields:
-                cur_val = _gv(toml_data if not is_secret else secrets_data, path, "")
+                cur_val = _get_secret(toml_data, path) if is_secret else _gv(toml_data, path, "")
                 dim(hint)
                 val = (q_secret if is_secret else q_text)(label, default=cur_val, style=_STYLE).ask()
                 if val and val != cur_val:
                     if is_secret:
-                        _sv(secrets_data, path, val)
-                        secrets_dirty = True
+                        _set_secret(toml_data, path, val)
                     else:
                         _sv(toml_data, path, val)
-                        toml_dirty = True
+                    toml_dirty = True
                     ok(f"{label} set")
 
         # ── Cache ────────────────────────────────────────────────────────────
@@ -1974,8 +1975,8 @@ def _section_export_import(toml_data: dict, secrets_data: dict) -> bool:
         try:
             secrets = {}
             for name, path, _hint, _encrypt in _SECRET_FIELDS:
-                val = _gv(secrets_data, path, "")
-                if isinstance(val, str) and val.startswith("ENC:"):
+                val = _gv(toml_data, path, "")
+                if _encrypt and val:
                     val = "(encrypted)"
                 secrets[".".join(path)] = {"label": name, "value": val}
 
@@ -2013,11 +2014,10 @@ def _section_export_import(toml_data: dict, secrets_data: dict) -> bool:
             if val and val != "(encrypted)":
                 path = key.split(".")
                 field = next((f for f in _SECRET_FIELDS if ".".join(f[1]) == key), None)
-                if field and field[3] and not str(val).startswith("ENC:"):
-                    from sarthak.storage.encrypt import encrypt_string
-                    _ensure_master_key()
-                    val = encrypt_string(str(val))
-                _sv(secrets_data, path, val)
+                if field and field[3]:
+                    _set_secret(toml_data, path, str(val))
+                else:
+                    _sv(toml_data, path, val)
                 imported += 1
         ok(f"Imported {imported} secret(s). Encrypted values require manual re-entry.")
 
@@ -2042,12 +2042,7 @@ def _init_wizard_state() -> tuple[Path, tomlkit.TOMLDocument, dict]:
 
     toml_data = tomlkit.parse(config_file.read_text())
     _ensure_master_key()
-    if not SECRETS_FILE.exists():
-        SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SECRETS_FILE.write_text("")
-        os.chmod(SECRETS_FILE, 0o600)
-        ok("Secrets file created")
-    secrets_data = _load_secrets()
+    secrets_data = toml_data
     return config_file, toml_data, secrets_data
 
 
@@ -2059,10 +2054,7 @@ def _persist_wizard_state(
     secrets_dirty: bool,
 ) -> None:
     saved = []
-    if secrets_dirty:
-        _save_secrets(secrets_data)
-        saved.append("secrets.toml")
-    if toml_dirty:
+    if toml_dirty or secrets_dirty:
         config_file.write_text(tomlkit.dumps(toml_data))
         saved.append("config.toml")
 
@@ -2234,4 +2226,3 @@ def run_quick_wizard() -> None:
     toml_dirty |= _section_embedding(toml_data, secrets_data)
 
     _persist_wizard_state(config_file, toml_data, secrets_data, toml_dirty, secrets_dirty)
-

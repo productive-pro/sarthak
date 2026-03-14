@@ -41,7 +41,9 @@ async def _open_conn() -> aiosqlite.Connection:
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA synchronous=NORMAL")
     await conn.execute("PRAGMA foreign_keys=ON")
-    await conn.execute("PRAGMA cache_size=-8000")  # 8MB page cache
+    await conn.execute("PRAGMA cache_size=-8000")    # 8 MB page cache
+    await conn.execute("PRAGMA mmap_size=268435456") # 256 MB memory-mapped I/O
+    await conn.execute("PRAGMA temp_store=MEMORY")   # temp tables in RAM
     return conn
 
 

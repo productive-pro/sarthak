@@ -10,6 +10,7 @@ Public API:
 from __future__ import annotations
 
 import asyncio
+import urllib.parse
 from pathlib import Path
 
 from pydantic_ai import Agent, RunContext
@@ -17,6 +18,8 @@ from pydantic_ai import Agent, RunContext
 from sarthak.core.logging import get_logger
 
 log = get_logger(__name__)
+_SQL_KEYWORDS_BLOCKLIST = ("ATTACH", "PRAGMA", "LOAD_EXTENSION", "VACUUM")
+_SQL_MAX_LENGTH = 4000
 
 
 # ── Build the agent lazily (so model config is read at runtime) ────────────────
@@ -61,10 +64,21 @@ def _get_agent() -> Agent:
         db_path = ctx.deps / ".spaces" / "sarthak.db"
         if not db_path.exists():
             return "No sarthak.db found — space may not be initialised."
-        if not sql.strip().upper().startswith("SELECT"):
+        sql = sql.strip()
+        if not sql:
+            return "SQL query is empty."
+        if len(sql) > _SQL_MAX_LENGTH:
+            return f"SQL query too long ({_SQL_MAX_LENGTH} chars max)."
+        upper_sql = sql.upper()
+        if not upper_sql.startswith("SELECT"):
             return "Only SELECT queries are allowed."
+        if ";" in sql.rstrip(";"):
+            return "Only single-statement SELECT queries are allowed."
+        if any(keyword in upper_sql for keyword in _SQL_KEYWORDS_BLOCKLIST):
+            return "That SQL feature is not allowed."
         try:
-            async with aiosqlite.connect(str(db_path)) as db:
+            read_only_uri = f"file:{urllib.parse.quote(str(db_path))}?mode=ro"
+            async with aiosqlite.connect(read_only_uri, uri=True) as db:
                 db.row_factory = aiosqlite.Row
                 async with db.execute(sql) as cur:
                     rows = await cur.fetchmany(50)
@@ -72,7 +86,10 @@ def _get_agent() -> Agent:
                     return f"No rows returned.\nSQL: `{sql}`"
                 cols = [d[0] for d in cur.description]
                 lines = [" | ".join(cols), "-" * 40]
-                lines += [" | ".join(str(row[c]) for c in cols) for row in rows]
+                lines += [
+                    " | ".join(str(row[c])[:500] for c in cols)
+                    for row in rows
+                ]
                 return "```\n" + "\n".join(lines) + "\n```"
         except Exception as exc:
             return f"SQL error: {exc}"

@@ -216,7 +216,6 @@ def status():
 
     click.echo("Sarthak status")
     _check_file("Config",     Path.home() / ".sarthak_ai" / "config.toml")
-    _check_file("Secrets",    Path.home() / ".sarthak_ai" / "secrets.toml")
     _check_file("Master key", Path.home() / ".sarthak_ai" / "master.key")
 
     try:

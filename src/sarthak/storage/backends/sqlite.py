@@ -6,12 +6,17 @@ Queries: storage/sql/sqlite/queries_activity.sql
 
 All SQL is loaded from .sql files at import time.
 Business logic never constructs SQL strings directly.
+
+Design notes:
+- Date arithmetic is delegated to SQLite (datetime('now', '-N days')) so the
+  query planner can use the ts index.
+- The query() method uses a lookup table to pick the right pre-written
+  SQL variant instead of building an f-string WHERE clause.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
 
 import structlog
 
@@ -43,9 +48,6 @@ async def _ensure_activity_table() -> None:
 
 class SQLiteActivityRepo:
     """SQLite implementation of ActivityRepository protocol."""
-
-    def _cutoff(self, days: int) -> str:
-        return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     async def write(
         self,
@@ -79,39 +81,54 @@ class SQLiteActivityRepo:
         days: int = 30,
         limit: int = 200,
     ) -> list[dict]:
-        await _ensure_activity_table()
-        cutoff = self._cutoff(days)
+        """Return activity rows newest-first using a pre-written SQL variant.
 
-        # Build WHERE clause dynamically (SQLite has no named params for this)
-        clauses = ["ts >= ?"]
-        params: list = [cutoff]
-        if space_dir:
-            clauses.append("space_dir = ?")
-            params.append(space_dir)
-        if activity_type:
-            clauses.append("activity_type = ?")
-            params.append(activity_type)
-        if concept_title:
-            clauses.append("concept_title = ?")
-            params.append(concept_title)
-        params.append(limit)
-        where = " AND ".join(clauses)
+        We pick among the six named query variants to avoid f-string SQL
+        construction. Each variant covers one combination of the three optional
+        filters (space_dir, activity_type, concept_title).
+        """
+        await _ensure_activity_table()
+        from datetime import datetime, timedelta, timezone
+
+        # Python-side cutoff for the base timestamp filter (index-friendly).
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+
+        has_space   = bool(space_dir)
+        has_type    = activity_type is not None
+        has_concept = bool(concept_title)
+
+        # Select the right pre-written query variant
+        if has_space and has_type and has_concept:
+            sql    = _Q["query_filtered_space_type_concept"]
+            params = (cutoff, space_dir, activity_type, concept_title, limit)
+        elif has_space and has_type:
+            sql    = _Q["query_filtered_space_type"]
+            params = (cutoff, space_dir, activity_type, limit)
+        elif has_space and has_concept:
+            sql    = _Q["query_filtered_space_concept"]
+            params = (cutoff, space_dir, concept_title, limit)
+        elif has_type:
+            sql    = _Q["query_filtered_type"]
+            params = (cutoff, activity_type, limit)
+        elif has_space:
+            sql    = _Q["query_filtered_space"]
+            params = (cutoff, space_dir, limit)
+        else:
+            sql    = _Q["query_all"]
+            params = (cutoff, limit)
 
         async with connect() as db:
-            async with db.execute(
-                f"SELECT * FROM user_activity WHERE {where} ORDER BY ts DESC LIMIT ?",
-                params,
-            ) as cur:
+            async with db.execute(sql, params) as cur:
                 rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
     async def summary(self, space_dir: str, days: int = 7) -> dict:
+        """Aggregate counts by activity_type. Uses SQLite native date math."""
         await _ensure_activity_table()
-        cutoff = self._cutoff(days)
         async with connect() as db:
-            async with db.execute(
-                _Q["summary"], (space_dir, cutoff)
-            ) as cur:
+            async with db.execute(_Q["summary"], (space_dir, days)) as cur:
                 rows = await cur.fetchall()
         return {r["activity_type"]: r["cnt"] for r in rows}
 
@@ -119,30 +136,27 @@ class SQLiteActivityRepo:
         self, space_dir: str, threshold: int = 3, days: int = 30
     ) -> list[str]:
         await _ensure_activity_table()
-        cutoff = self._cutoff(days)
         async with connect() as db:
             async with db.execute(
-                _Q["failed_code_concepts"], (space_dir, cutoff, threshold)
+                _Q["failed_code_concepts"], (space_dir, days, threshold)
             ) as cur:
                 rows = await cur.fetchall()
         return [r["concept_title"] for r in rows]
 
     async def concepts_touched(self, space_dir: str, days: int = 14) -> list[str]:
         await _ensure_activity_table()
-        cutoff = self._cutoff(days)
         async with connect() as db:
             async with db.execute(
-                _Q["concepts_touched"], (space_dir, cutoff)
+                _Q["concepts_touched"], (space_dir, days)
             ) as cur:
                 rows = await cur.fetchall()
         return [r["concept_title"] for r in rows]
 
     async def recent_media_notes(self, space_dir: str, days: int = 14) -> list[dict]:
         await _ensure_activity_table()
-        cutoff = self._cutoff(days)
         async with connect() as db:
             async with db.execute(
-                _Q["recent_media_notes"], (space_dir, cutoff)
+                _Q["recent_media_notes"], (space_dir, days)
             ) as cur:
                 rows = await cur.fetchall()
         return [dict(r) for r in rows]
@@ -158,7 +172,7 @@ class SQLiteActivityRepo:
         return [dict(r) for r in rows]
 
     async def count(self, space_dir: str) -> int:
-        """Return total activity rows for a space — useful for health checks."""
+        """Total activity rows for a space — useful for health checks."""
         await _ensure_activity_table()
         async with connect() as db:
             async with db.execute(_Q["count_by_space"], (space_dir,)) as cur:
@@ -166,16 +180,14 @@ class SQLiteActivityRepo:
         return int(row["cnt"]) if row else 0
 
     async def prune(self, space_dir: str, keep_days: int = 90) -> int:
-        """
-        Delete transient activity rows older than keep_days.
-        Preserves 'practice_test' and 'note' rows (they're primary records).
+        """Delete transient rows older than keep_days (preserves practice_test/note).
+
         Returns number of rows deleted.
         """
         await _ensure_activity_table()
-        cutoff = self._cutoff(keep_days)
         async with connect() as db:
             cur = await db.execute(
-                _Q["delete_old_activity"], (cutoff, space_dir)
+                _Q["delete_old_activity"], (keep_days, space_dir)
             )
             await db.commit()
             return cur.rowcount

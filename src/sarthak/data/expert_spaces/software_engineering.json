@@ -1,0 +1,9 @@
+{
+  "id": "software_engineering",
+  "label": "Software Engineering",
+  "desc": "System design, distributed systems, clean architecture, testing",
+  "expert_tip": "Senior engineers think in trade-offs, not right answers.",
+  "tools": ["pytest", "ruff", "httpx", "docker"],
+  "folders": ["src", "tests", "docs", "scripts"],
+  "color": "#3b82f6"
+}

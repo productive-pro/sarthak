@@ -1,0 +1,9 @@
+{
+  "id": "exam_prep",
+  "label": "Exam Preparation",
+  "desc": "GATE, UPSC, JEE, GRE — structured mastery + spaced repetition",
+  "expert_tip": "Weak-area drilling beats full-syllabus re-reading every time.",
+  "tools": [],
+  "folders": ["subjects", "mock_tests", "weak_areas", "flashcards"],
+  "color": "#ef4444"
+}

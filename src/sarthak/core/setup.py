@@ -26,7 +26,6 @@ import tomlkit
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR        = Path.home() / ".sarthak_ai"
 CONFIG_FILE     = BASE_DIR / "config.toml"
-SECRETS_FILE    = BASE_DIR / "secrets.toml"
 MASTER_KEY_FILE = BASE_DIR / "master.key"
 BOOTSTRAP_FLAG  = BASE_DIR / ".bootstrapped"   # sentinel: exists ⟹ already done
 
@@ -125,18 +124,6 @@ def _write_config() -> None:
     _step(f"config.toml  →  {CONFIG_FILE}")
 
 
-def _write_secrets() -> None:
-    """Create an empty secrets.toml with strict permissions."""
-    if SECRETS_FILE.exists():
-        return
-    SECRETS_FILE.write_text("", encoding="utf-8")
-    try:
-        os.chmod(SECRETS_FILE, 0o600)
-    except Exception:
-        pass
-    _step(f"secrets.toml →  {SECRETS_FILE}")
-
-
 def _write_master_key() -> None:
     """Generate and store the master encryption key."""
     if MASTER_KEY_FILE.exists():
@@ -172,7 +159,6 @@ def bootstrap_first_run(*, silent: bool = False) -> None:
     steps = [
         ("Creating directories …",   _create_dirs),
         ("Writing config.toml …",    _write_config),
-        ("Writing secrets.toml …",   _write_secrets),
         ("Generating master key …",  _write_master_key),
         ("Finalising …",             _mark_done),
     ]
@@ -200,4 +186,3 @@ def ensure_bootstrapped() -> None:
     if BOOTSTRAP_FLAG.exists() and CONFIG_FILE.exists():
         return
     bootstrap_first_run()
-

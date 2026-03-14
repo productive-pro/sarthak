@@ -1,0 +1,9 @@
+{
+  "id": "education",
+  "label": "Education & Learning",
+  "desc": "Knowledge tracing, adaptive learning, learning analytics",
+  "expert_tip": "Spaced repetition beats re-reading by 3-4x — evidence-backed.",
+  "tools": ["gradio", "streamlit", "pandas"],
+  "folders": ["curriculum", "notes", "assessments", "resources"],
+  "color": "#f59e0b"
+}

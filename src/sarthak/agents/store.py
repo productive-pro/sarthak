@@ -10,16 +10,16 @@ Storage layout:
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from sarthak.agents.models import AgentRun, AgentScope, AgentSpec
+from sarthak.agents.models import AgentPatch, AgentRun, AgentScope, AgentSpec
 
 log = structlog.get_logger(__name__)
 
@@ -166,11 +166,21 @@ def update_agent(agent_id: str, **updates: Any) -> AgentSpec | None:
     spec = load_agent(agent_id)
     if not spec:
         return None
-    filtered = {k: v for k, v in updates.items() if hasattr(spec, k)}
-    filtered["updated_at"] = datetime.now(timezone.utc).isoformat()
-    spec = spec.model_copy(update=filtered)
-    save_agent(spec)
-    return spec
+    current = spec.model_dump()
+    filtered = {k: v for k, v in updates.items() if k in current}
+    current.update(filtered)
+    current["updated_at"] = datetime.now(timezone.utc).isoformat()
+    validated = AgentSpec.model_validate(current)
+    save_agent(validated)
+    return validated
+
+
+def patch_agent(agent_id: str, patch: AgentPatch) -> AgentSpec | None:
+    """Patch only explicitly whitelisted mutable fields."""
+    updates = patch.model_dump(exclude_none=True)
+    if not updates:
+        return load_agent(agent_id)
+    return update_agent(agent_id, **updates)
 
 
 # ── Run history ───────────────────────────────────────────────────────────────

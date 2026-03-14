@@ -1,0 +1,9 @@
+{
+  "id": "ai_engineering",
+  "label": "AI Engineering",
+  "desc": "LLMs, fine-tuning, RAG systems, agent frameworks, LLMOps",
+  "expert_tip": "Build your own attention block before using transformers.",
+  "tools": ["pydantic-ai", "vllm", "langchain", "wandb"],
+  "folders": ["agents", "evals", "notebooks", "src", "data"],
+  "color": "#8b5cf6"
+}

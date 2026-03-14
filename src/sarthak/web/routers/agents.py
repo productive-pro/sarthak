@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from sarthak.agents.models import AgentPatch
 from sarthak.web.routers.helpers import get_space_or_404
 
 router = APIRouter()
@@ -18,7 +19,7 @@ async def list_agents_api() -> list[dict]:
 
 
 class AgentCreate(BaseModel):
-    description: str
+    description: str = Field(min_length=1, max_length=8000)
     directory: str = ""
     notify_telegram: bool = False
 
@@ -70,10 +71,10 @@ async def delete_agent_api(agent_id: str) -> dict:
 
 
 @router.patch("/api/agents/{agent_id}")
-async def patch_agent_api(agent_id: str, body: dict) -> dict:
-    from sarthak.agents.store import update_agent
+async def patch_agent_api(agent_id: str, body: AgentPatch) -> dict:
+    from sarthak.agents.store import patch_agent
 
-    spec = update_agent(agent_id, **body)
+    spec = patch_agent(agent_id, body)
     if not spec:
         raise HTTPException(404, "Agent not found")
     return spec.model_dump()
@@ -92,7 +93,7 @@ async def list_space_agents_api(space_id: str) -> list[dict]:
 
 
 class SpaceAgentCreate(BaseModel):
-    description: str
+    description: str = Field(min_length=1, max_length=8000)
     notify_telegram: bool = False
 
 

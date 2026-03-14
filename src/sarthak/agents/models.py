@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -73,6 +74,18 @@ class AgentSpec(BaseModel):
     next_run_at: str = ""                          # ISO-8601, computed from schedule
     extra: dict[str, Any] = Field(default_factory=dict)  # free-form metadata from creator
     sandbox: SandboxPolicy = Field(default_factory=SandboxPolicy)  # resource overrides
+
+
+class AgentPatch(BaseModel):
+    """Whitelisted mutable fields for API/CLI patch operations."""
+    name: str | None = None
+    description: str | None = None
+    prompt: str | None = None
+    schedule: str | None = None
+    notify_telegram: bool | None = None
+    notify_whatsapp: bool | None = None
+    enabled: bool | None = None
+    extra: dict[str, Any] | None = None
 
 
 class AgentRun(BaseModel):

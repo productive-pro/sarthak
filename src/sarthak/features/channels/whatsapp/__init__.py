@@ -2,8 +2,7 @@
 
 Public API
 ----------
-  SESSION_DB          path to the neonize SQLite session store
-  SESSION_NAME        str(SESSION_DB), passed to NewClient
+  SESSION_DB          Path to the neonize SQLite session store (str, passed to ClientFactory)
   send_message_standalone(text)  push a message to the configured JID (used by agents)
   is_connected()      True when the neonize bot is live
 
@@ -18,10 +17,11 @@ from platformdirs import user_data_dir
 
 # ── Shared neonize session path ───────────────────────────────────────────────
 # Single source of truth — neonize_bot, qr.py, and the configure wizard all
-# import SESSION_DB / SESSION_NAME from here so they always share the same store.
-SESSION_DB: Path = Path(user_data_dir("sarthak", "sarthak")) / "whatsapp_session.db"
-SESSION_DB.parent.mkdir(parents=True, exist_ok=True)
-SESSION_NAME: str = str(SESSION_DB)
+# import SESSION_DB from here so they always share the same store.
+# Passed as database_name to ClientFactory, NOT to NewClient directly.
+_data_dir = Path(user_data_dir("sarthak", "sarthak"))
+_data_dir.mkdir(parents=True, exist_ok=True)
+SESSION_DB: str = str(_data_dir / "whatsapp_session.db")
 
 
 # ── Lazy re-exports — keep startup fast; neonize import only on first use ─────
@@ -43,4 +43,4 @@ def is_connected() -> bool:
         return False
 
 
-__all__ = ["SESSION_DB", "SESSION_NAME", "send_message_standalone", "is_connected"]
+__all__ = ["SESSION_DB", "send_message_standalone", "is_connected"]

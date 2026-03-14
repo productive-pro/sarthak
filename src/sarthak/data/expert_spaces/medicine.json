@@ -1,0 +1,9 @@
+{
+  "id": "medicine",
+  "label": "Medicine / Medical AI",
+  "desc": "Clinical data science, medical imaging, EHR analysis",
+  "expert_tip": "Validate on held-out institutions, not just held-out patients.",
+  "tools": ["lifelines", "pydicom", "medspacy"],
+  "folders": ["cases", "notes", "literature", "data"],
+  "color": "#10b981"
+}

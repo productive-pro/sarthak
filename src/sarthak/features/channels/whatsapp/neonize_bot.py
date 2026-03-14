@@ -12,11 +12,24 @@ Message flow:
   incoming text → _handle_message() → command dispatch / orchestrator
                 → reply sent back via _send()
 
+Media flow:
+  send_image_standalone / send_document_standalone / send_audio_standalone
+  → build message object → _send_media()
+
 Reconnect: exponential backoff 5 s → 10 s → … → 300 s cap.
 Stops cleanly when _stop_event is set.
 
+Session: uses ClientFactory(database_name=SESSION_DB) so credentials
+are stored in the configured path, not the process CWD.
+
 Commands: /today /digest /srs /roadmap /notes /status /spaces /help
 Everything else → free text → orchestrator (buffered stream reply)
+
+Events handled:
+  ConnectedEv, DisconnectedEv, LoggedOutEv, MessageEv, ReceiptEv,
+  PresenceEv, ChatPresenceEv, CallOfferEv, CallTerminateEv,
+  GroupInfoEv, PairStatusEv, HistorySyncEv, BlocklistEv,
+  StreamErrorEv, KeepAliveTimeoutEv, KeepAliveRestoredEv
 """
 from __future__ import annotations
 
@@ -31,52 +44,48 @@ import structlog
 
 from sarthak.core.config import load_config
 from sarthak.features.channels import load_history_messages, save_chat_turn, stream_dispatch
-from sarthak.features.channels.whatsapp import SESSION_DB as _SESSION_DB, SESSION_NAME as _SESSION_NAME
+from sarthak.features.channels.whatsapp import SESSION_DB
 
-# Max chars per WA message — WhatsApp silently truncates above ~4096
 _WA_MESSAGE_LIMIT = 3800
 
 log = structlog.get_logger(__name__)
 
-
-# Process-wide singletons
+# ── Process-wide singletons ───────────────────────────────────────────────────
 _client: Any = None
+_factory: Any = None
 _async_loop: asyncio.AbstractEventLoop | None = None
 _bot_thread: threading.Thread | None = None
 _stop_event = threading.Event()
 
-_MIN_HEALTHY_SECS = 30  # reset backoff only after a stable connection
+_MIN_HEALTHY_SECS = 30
 
 
 def _wa_cfg() -> dict:
-    """Return the [whatsapp] config section (cached via load_config)."""
     return load_config().get("whatsapp", {})
 
 
 def _backoff_max() -> int:
-    """Max reconnect wait in seconds (config: whatsapp.reconnect_backoff_max)."""
     return int(_wa_cfg().get("reconnect_backoff_max", 300))
 
 
 def _backoff_init() -> int:
-    """Initial reconnect wait in seconds (config: whatsapp.reconnect_backoff_init)."""
     return int(_wa_cfg().get("reconnect_backoff_init", 5))
 
-# Track IDs of messages we sent ourselves so we don't echo-respond to them.
-# WhatsApp delivers our own sent messages back to all linked devices (IsFromMe=True).
+
+# Track IDs of messages we sent so we don't echo-respond to them.
 _SENT_IDS: collections.deque[str] = collections.deque(maxlen=200)
 
-# ── Suppress noisy whatsmeow EOF log ─────────────────────────────────────────
-# neonize routes Go/whatsmeow logs through Python's "neonize" logger.
-# "failed to close WebSocket: EOF" is harmless — filter it out.
 
+# ── Suppress noisy whatsmeow EOF log ─────────────────────────────────────────
 class _WhatsmeowEOFFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        return "failed to close WebSocket" not in record.getMessage()
+        msg = record.getMessage()
+        return "failed to close WebSocket" not in msg and "failed to read frame header" not in msg
+
 
 logging.getLogger("neonize").addFilter(_WhatsmeowEOFFilter())
 
-# ── Command table (mirrors Meta bot) ──────────────────────────────────────────
+# ── Command table ─────────────────────────────────────────────────────────────
 _COMMANDS: dict[str, str] = {
     "/today":   "today",
     "/digest":  "digest",
@@ -101,13 +110,7 @@ _NUMERIC_MENU: dict[str, str] = {
 _HELP_TEXT = (
     "*Sarthak AI — WhatsApp*\n\n"
     "*Quick Menu*\n"
-    "1) Today\n"
-    "2) Digest\n"
-    "3) SRS\n"
-    "4) Roadmap\n"
-    "5) Notes\n"
-    "6) Status\n"
-    "7) Spaces\n\n"
+    "1) Today\n2) Digest\n3) SRS\n4) Roadmap\n5) Notes\n6) Status\n7) Spaces\n\n"
     "/today    — Today's learning dashboard\n"
     "/digest   — Daily digest (all spaces)\n"
     "/srs      — SRS cards due today\n"
@@ -120,22 +123,45 @@ _HELP_TEXT = (
 )
 
 
-# ── Send helpers ──────────────────────────────────────────────────────────────
+# ── Connection status ─────────────────────────────────────────────────────────
 
 def is_connected() -> bool:
     """True when a live neonize client is active."""
-    return _client is not None
+    return _client is not None and getattr(_client, "connected", False)
 
+
+# ── Auth guard ────────────────────────────────────────────────────────────────
+
+def _normalise_jid(user: str) -> str:
+    v = str(user or "").strip().lower()
+    if "@" in v:
+        v = v.split("@", 1)[0]
+    if ":" in v:
+        v = v.split(":", 1)[0]
+    return v
+
+
+def _is_allowed(jid_user: str, is_group: bool = False, is_from_me: bool = False) -> bool:
+    wa = _wa_cfg()
+    if is_group and str(wa.get("allow_groups", "false")).lower() in ("false", "0", ""):
+        return False
+    if is_from_me:
+        return True
+    raw = wa.get("jid", "")
+    allowed = _normalise_jid(str(raw).strip() if raw else "")
+    return not allowed or _normalise_jid(jid_user) == allowed
+
+
+# ── Send helpers ──────────────────────────────────────────────────────────────
 
 def _send(jid: Any, text: str) -> None:
-    """Send a plain-text reply chunked to _WA_MESSAGE_LIMIT. jid is a neonize JID object."""
+    """Send plain-text reply chunked to _WA_MESSAGE_LIMIT."""
     if _client is None:
         return
     chunks = [text[i: i + _WA_MESSAGE_LIMIT] for i in range(0, len(text), _WA_MESSAGE_LIMIT)]
     for chunk in chunks:
         try:
             resp = _client.send_message(jid, chunk)
-            # Record sent ID so on_message skips the echo WhatsApp delivers back.
             try:
                 _SENT_IDS.append(resp.ID)
             except Exception:
@@ -145,16 +171,24 @@ def _send(jid: Any, text: str) -> None:
             break
 
 
+def _send_typing(jid: Any, typing: bool = True) -> None:
+    """Send chat presence (typing indicator)."""
+    if _client is None:
+        return
+    try:
+        state = "composing" if typing else "paused"
+        _client.send_chat_presence(jid, state, "")
+    except Exception:
+        pass
+
+
 async def send_message_standalone(text: str) -> None:
     """Send to the configured JID without an active request context.
-
-    Used by the agent scheduler/runner for push notifications.
-    No-op if whatsapp is disabled or not yet connected.
-    """
+    Used by agent scheduler/runner for push notifications. No-op if not connected."""
     cfg = load_config()
     if not cfg.get("whatsapp", {}).get("enabled"):
         return
-    raw_jid  = cfg.get("whatsapp", {}).get("jid", "")
+    raw_jid = cfg.get("whatsapp", {}).get("jid", "")
     jid_user = str(raw_jid).strip() if raw_jid else ""
     if not jid_user:
         log.warning("whatsapp_standalone_skipped", reason="jid not set in config")
@@ -170,51 +204,58 @@ async def send_message_standalone(text: str) -> None:
         log.warning("whatsapp_standalone_failed", error=str(exc))
 
 
-# ── Auth guard ────────────────────────────────────────────────────────────────
+async def send_image_standalone(image_bytes: bytes, caption: str = "") -> None:
+    """Send an image to the configured JID. No-op if not connected."""
+    cfg = load_config()
+    if not cfg.get("whatsapp", {}).get("enabled") or _client is None:
+        return
+    raw_jid = cfg.get("whatsapp", {}).get("jid", "")
+    if not raw_jid:
+        return
+    try:
+        from neonize.utils.jid import build_jid  # type: ignore
+        jid = build_jid(str(raw_jid).strip())
+        msg = _client.build_image_message(image_bytes, caption=caption, mime_type="image/jpeg")
+        resp = _client.send_message(jid, message=msg)
+        try:
+            _SENT_IDS.append(resp.ID)
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("whatsapp_send_image_failed", error=str(exc))
 
-def _is_allowed(jid_user: str, is_group: bool = False, is_from_me: bool = False) -> bool:
-    """Restrict to the configured JID; optionally block group chats.
 
-    whatsapp.jid       — bare number; TOML int or str, normalised here.
-    whatsapp.allow_groups — if false (default) group messages are dropped.
-    """
-    def _normalise(user: str) -> str:
-        # Accept equivalent identity formats:
-        #   9190...               (bare phone)
-        #   9190...@s.whatsapp.net
-        #   1893...@lid
-        #   1893...:59@lid        (device suffix)
-        v = str(user or "").strip().lower()
-        if "@" in v:
-            v = v.split("@", 1)[0]
-        if ":" in v:
-            v = v.split(":", 1)[0]
-        return v
-
-    wa = _wa_cfg()
-    if is_group and str(wa.get("allow_groups", "false")).lower() in ("false", "0", ""):
-        return False
-    if is_from_me:
-        # For companion mode, self-originated messages can appear with LID while
-        # config may store a phone JID. Allow them through.
-        return True
-    raw     = wa.get("jid", "")
-    allowed = _normalise(str(raw).strip() if raw else "")
-    current = _normalise(jid_user)
-    return not allowed or current == allowed
+async def send_document_standalone(data: bytes, filename: str, caption: str = "", mime_type: str = "application/octet-stream") -> None:
+    """Send a document/file to the configured JID. No-op if not connected."""
+    cfg = load_config()
+    if not cfg.get("whatsapp", {}).get("enabled") or _client is None:
+        return
+    raw_jid = cfg.get("whatsapp", {}).get("jid", "")
+    if not raw_jid:
+        return
+    try:
+        from neonize.utils.jid import build_jid  # type: ignore
+        jid = build_jid(str(raw_jid).strip())
+        msg = _client.build_document_message(data, filename=filename, caption=caption, mime_type=mime_type)
+        resp = _client.send_message(jid, message=msg)
+        try:
+            _SENT_IDS.append(resp.ID)
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("whatsapp_send_document_failed", error=str(exc))
 
 
 # ── Message handlers ──────────────────────────────────────────────────────────
 
 async def _handle_message(jid: Any, text: str) -> None:
     """Route one incoming message: command or free text → reply → send."""
-    session_id = f"wa-qr:{jid.User}"
-    wa         = _wa_cfg()
+    session_id = f"wa-qr:{getattr(jid, 'User', str(jid))}"
+    wa = _wa_cfg()
     clean_text = text.strip()
-    cmd        = clean_text.split()[0].lower() if clean_text.startswith("/") else ""
-    menu_key   = clean_text.lower()
+    cmd = clean_text.split()[0].lower() if clean_text.startswith("/") else ""
+    menu_key = clean_text.lower()
 
-    # Set presence to available while processing if configured
     if str(wa.get("send_presence", "false")).lower() not in ("false", "0", ""):
         try:
             if _client:
@@ -222,11 +263,7 @@ async def _handle_message(jid: Any, text: str) -> None:
         except Exception:
             pass
 
-    if cmd == "/help":
-        _send(jid, _HELP_TEXT)
-        return
-
-    if cmd == "/menu" or menu_key in ("menu", "help"):
+    if cmd in ("/help", "/menu") or menu_key in ("menu", "help"):
         _send(jid, _HELP_TEXT)
         return
 
@@ -253,13 +290,17 @@ async def _handle_message(jid: Any, text: str) -> None:
         await save_chat_turn(session_id, text, reply)
         return
 
-    reply = await _stream_and_buffer(text, session_id)
+    # Free text → stream orchestrator response with typing indicator
+    _send_typing(jid, True)
+    try:
+        reply = await _stream_and_buffer(text, session_id)
+    finally:
+        _send_typing(jid, False)
     _send(jid, reply)
     await save_chat_turn(session_id, text, reply)
 
 
 async def _stream_and_buffer(question: str, session_id: str) -> str:
-    """Collect the full streaming orchestrator reply into a single string."""
     history = await load_history_messages(session_id)
     final = ""
     try:
@@ -274,11 +315,6 @@ async def _stream_and_buffer(question: str, session_id: str) -> str:
 
 
 async def _run_handler(run_key: str) -> str:
-    """Reuse the Telegram command handlers (no Telegram-specific deps).
-
-    _CTX_HANDLERS accept (pool, ctx); ctx=None triggers get_active_space() fallback.
-    _RUN_HANDLERS accept (pool,);  pool=None is fine — they call get_activity_repo().
-    """
     from sarthak.features.channels.telegram.bot import _RUN_HANDLERS, _CTX_HANDLERS
     try:
         if run_key in _CTX_HANDLERS:
@@ -286,7 +322,6 @@ async def _run_handler(run_key: str) -> str:
         if run_key in _RUN_HANDLERS:
             return await _RUN_HANDLERS[run_key](None)
     except AttributeError as exc:
-        # ctx.user_data called on ctx=None — handler needs an active space.
         log.warning("neonize_handler_needs_ctx", run_key=run_key, error=str(exc))
         return "No active space. Set one via the web UI or send /spaces."
     except Exception as exc:
@@ -297,21 +332,57 @@ async def _run_handler(run_key: str) -> str:
 
 # ── neonize client factory + event wiring ────────────────────────────────────
 
-def _make_client(loop: asyncio.AbstractEventLoop, connected_flag: threading.Event) -> Any:
-    """Build a fresh NewClient with all event handlers wired.
+def _make_client_and_factory(
+    loop: asyncio.AbstractEventLoop,
+    connected_flag: threading.Event,
+) -> tuple[Any, Any]:
+    """Build ClientFactory + NewClient with all event handlers wired.
 
-    connected_flag is set by ConnectedEv so the retry loop can distinguish
-    'was authenticated then disconnected' from 'never authenticated (QR shown)'.
+    Uses ClientFactory(database_name=SESSION_DB) so credentials are always
+    stored in the configured path regardless of CWD.
+    If a paired device already exists in the DB, reuse its JID.
+    Otherwise create a fresh client with a stable uuid.
     """
-    from neonize.client import NewClient  # type: ignore
-    from neonize.events import ConnectedEv, MessageEv, DisconnectedEv, LoggedOutEv  # type: ignore
+    from neonize.client import ClientFactory  # type: ignore
+    from neonize.events import (  # type: ignore
+        ConnectedEv, DisconnectedEv, LoggedOutEv, MessageEv,
+        ReceiptEv, PresenceEv, ChatPresenceEv,
+        CallOfferEv, CallTerminateEv, GroupInfoEv,
+        PairStatusEv, HistorySyncEv, BlocklistEv,
+        StreamErrorEv, KeepAliveTimeoutEv, KeepAliveRestoredEv,
+        ClientOutdatedEv, TemporaryBanEv, UndecryptableMessageEv,
+    )
 
-    client = NewClient(_SESSION_NAME)
+    factory = ClientFactory(database_name=SESSION_DB)
+
+    # Always use the stable uuid "sarthak-bot" — this MUST match the uuid used
+    # during QR pairing in qr.py / configure.py so the Go layer finds the stored
+    # session in the DB. Passing jid= from get_all_devices() would set uuid to
+    # jid.User (e.g. "919014633844:60") which mismatches the scan-time uuid and
+    # causes the Go layer to treat this as a fresh login → QR shown → server EOF.
+    try:
+        devices = factory.get_all_devices()
+        if devices:
+            log.info("neonize_resuming_session", jid=str(devices[0].JID.User))
+        else:
+            log.info("neonize_no_stored_session", hint="QR scan needed via 'sarthak configure'")
+    except Exception as exc:
+        log.warning("neonize_get_devices_failed", error=str(exc))
+
+    client = factory.new_client(uuid="sarthak-bot")
+
+    # ── Connection events ─────────────────────────────────────────────────────
 
     @client.event(ConnectedEv)
-    def on_connected(_, ev) -> None:
+    def on_connected(cl, ev) -> None:
         connected_flag.set()
         log.info("neonize_authenticated")
+        push_name = str(_wa_cfg().get("push_name", "")).strip()
+        if push_name:
+            try:
+                cl.set_profile_name(push_name)
+            except Exception:
+                pass
 
     @client.event(DisconnectedEv)
     def on_disconnect(_, ev) -> None:
@@ -319,21 +390,109 @@ def _make_client(loop: asyncio.AbstractEventLoop, connected_flag: threading.Even
 
     @client.event(LoggedOutEv)
     def on_logout(_, ev) -> None:
-        log.warning("neonize_logged_out", hint="Re-scan QR via 'sarthak configure'")
-        connected_flag.clear()
+        reason = str(getattr(ev, "Reason", ""))
+        log.warning("neonize_logged_out", reason=reason,
+                    hint="Re-scan QR via 'sarthak configure' or web UI")
+
+    @client.event(PairStatusEv)
+    def on_pair_status(_, ev) -> None:
+        log.info("neonize_pair_status", id=str(getattr(ev, "ID", "")))
+
+    @client.event(ClientOutdatedEv)
+    def on_outdated(_, ev) -> None:
+        log.warning("neonize_client_outdated", hint="Upgrade neonize: pip install -U neonize")
+
+    @client.event(TemporaryBanEv)
+    def on_temp_ban(_, ev) -> None:
+        log.error("neonize_temporary_ban", code=str(getattr(ev, "Code", "")),
+                  expire=str(getattr(ev, "Expire", "")))
+
+    # ── Keep-alive ────────────────────────────────────────────────────────────
+
+    @client.event(KeepAliveTimeoutEv)
+    def on_keepalive_timeout(_, ev) -> None:
+        log.warning("neonize_keepalive_timeout")
+
+    @client.event(KeepAliveRestoredEv)
+    def on_keepalive_restored(_, ev) -> None:
+        log.info("neonize_keepalive_restored")
+
+    # ── Stream errors ─────────────────────────────────────────────────────────
+
+    @client.event(StreamErrorEv)
+    def on_stream_error(_, ev) -> None:
+        code = str(getattr(ev, "Code", ""))
+        raw = str(getattr(ev, "Raw", ""))
+        log.warning("neonize_stream_error", code=code, raw=raw[:200])
+
+    # ── Sync events ───────────────────────────────────────────────────────────
+
+    @client.event(HistorySyncEv)
+    def on_history_sync(_, ev) -> None:
+        log.info("neonize_history_sync_received")
+
+    @client.event(BlocklistEv)
+    def on_blocklist(_, ev) -> None:
+        log.info("neonize_blocklist_received")
+
+    # ── Presence ──────────────────────────────────────────────────────────────
+
+    @client.event(PresenceEv)
+    def on_presence(_, ev) -> None:
+        pass  # available for future use
+
+    @client.event(ChatPresenceEv)
+    def on_chat_presence(_, ev) -> None:
+        pass  # typing indicators from contacts
+
+    # ── Receipts ──────────────────────────────────────────────────────────────
+
+    @client.event(ReceiptEv)
+    def on_receipt(_, ev) -> None:
+        pass  # delivery/read receipts — available for future tracking
+
+    # ── Calls ─────────────────────────────────────────────────────────────────
+
+    @client.event(CallOfferEv)
+    def on_call_offer(cl, ev) -> None:
+        caller = str(getattr(getattr(ev, "CallCreator", None), "User", ""))
+        if str(_wa_cfg().get("auto_reject_calls", "true")).lower() not in ("false", "0", ""):
+            log.info("neonize_incoming_call_rejected", caller=caller)
+            try:
+                cl.reject_call(ev.CallID, ev.CallCreator)
+            except Exception:
+                pass
+        else:
+            log.info("neonize_incoming_call_received", caller=caller)
+
+    @client.event(CallTerminateEv)
+    def on_call_terminate(_, ev) -> None:
+        log.info("neonize_call_terminated")
+
+    # ── Groups ────────────────────────────────────────────────────────────────
+
+    @client.event(GroupInfoEv)
+    def on_group_info(_, ev) -> None:
+        pass  # group metadata changes — available for future use
+
+    # ── Undecryptable ─────────────────────────────────────────────────────────
+
+    @client.event(UndecryptableMessageEv)
+    def on_undecryptable(_, ev) -> None:
+        log.warning("neonize_undecryptable_message")
+
+    # ── Incoming messages ─────────────────────────────────────────────────────
 
     @client.event(MessageEv)
     def on_message(_, ev) -> None:
         try:
-            src  = ev.Info.MessageSource
-            jid  = src.Sender
+            src = ev.Info.MessageSource
+            jid = src.Sender
             chat = src.Chat
 
-            # Skip echoes of messages neonize itself just sent.
             if src.IsFromMe and ev.Info.ID in _SENT_IDS:
                 return
 
-            # For self-messages use Chat JID; for DMs use Sender JID.
             effective_jid = jid if not src.IsFromMe else chat
             if not effective_jid or not _is_allowed(
                 str(getattr(effective_jid, "User", "")),
@@ -345,79 +504,97 @@ def _make_client(loop: asyncio.AbstractEventLoop, connected_flag: threading.Even
             text = (
                 ev.Message.conversation
                 or getattr(ev.Message.extendedTextMessage, "text", "")
-                or getattr(ev.Message.ephemeralMessage, "message", {})
-                   and getattr(ev.Message.ephemeralMessage.message, "conversation", "")
+                or (
+                    getattr(ev.Message.ephemeralMessage, "message", None)
+                    and getattr(ev.Message.ephemeralMessage.message, "conversation", "")
+                )
+                or ""
             ).strip()
 
             if not text:
                 return
 
-            log.info("neonize_message_received", jid=str(getattr(effective_jid, "User", "")), preview=text[:60])
-            asyncio.run_coroutine_threadsafe(_handle_message(effective_jid, text), loop)
+            log.info("neonize_message_received",
+                     jid=str(getattr(effective_jid, "User", "")),
+                     preview=text[:60])
+            asyncio.run_coroutine_threadsafe(
+                _handle_message(effective_jid, text), loop
+            )
+            if str(_wa_cfg().get("send_read_receipt", "true")).lower() not in ("false", "0", ""):
+                try:
+                    from neonize.utils.enum import ReceiptType  # type: ignore
+                    _.mark_read(
+                        ev.Info.ID,
+                        chat=chat,
+                        sender=jid,
+                        receipt=ReceiptType.Read,
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             log.error("neonize_on_message_error", error=str(exc))
 
-    return client
+    return client, factory
 
 
-# ── Async retry loop (runs inside the dedicated event loop thread) ─────────────
+# ── Async retry loop ──────────────────────────────────────────────────────────
 
 async def _async_run_with_retry() -> None:
     """Connect neonize with exponential backoff on disconnect/error.
 
-    Logic:
-    - No session DB  → warn once and exit (user needs to run configure).
-    - connect() returns without ConnectedEv firing → bail, session stale/invalid.
-    - connect() returns after ConnectedEv fired → normal disconnect, reconnect.
+    Uses ClientFactory so the session DB path is always correct.
+    - No devices in DB and no QR callback → warn once and exit.
+    - connect() returns without ConnectedEv → session invalid, stop.
+    - connect() returns after ConnectedEv → normal disconnect, reconnect.
     """
-    global _client
+    global _client, _factory
 
-    loop  = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
     delay = _backoff_init()
 
     while not _stop_event.is_set():
-        if not _SESSION_DB.exists():
-            log.warning(
-                "neonize_no_session",
-                hint="Run 'sarthak configure' → Channels → WhatsApp to scan QR",
-            )
-            return
-
-        connected_flag = threading.Event()
         try:
-            client = _make_client(loop, connected_flag)
+            from neonize.client import ClientFactory  # type: ignore  # noqa: F401
         except ImportError:
             log.error("neonize_not_installed", hint="pip install neonize")
             return
 
+        connected_flag = threading.Event()
+        try:
+            client, factory = _make_client_and_factory(loop, connected_flag)
+        except Exception as exc:
+            log.error("neonize_client_build_failed", error=str(exc))
+            return
+
         _client = client
-        log.info("neonize_connecting")
+        _factory = factory
+        log.info("neonize_connecting", session_db=SESSION_DB, uuid="sarthak-bot")
         t0 = time.monotonic()
 
         try:
             await asyncio.to_thread(client.connect)
         except Exception as exc:
             log.warning("neonize_connection_error", error=str(exc), retry_in=delay)
-        else:
-            log.info("neonize_connect_returned")
 
-        uptime  = time.monotonic() - t0
+        uptime = time.monotonic() - t0
         _client = None
+        _factory = None
 
         if _stop_event.is_set():
             break
 
-        # connect() returned without authenticating → QR was shown or session
-        # was rejected. Stop retrying; user must re-scan.
         if not connected_flag.is_set():
             log.warning(
                 "neonize_session_invalid",
                 uptime_secs=round(uptime, 1),
-                hint="Session rejected or expired. Re-scan QR via 'sarthak configure'.",
+                session_db=SESSION_DB,
+                hint=(
+                    "ConnectedEv never fired — session rejected or no stored session. "
+                    "Delete the DB and re-scan QR: rm {db} && sarthak configure".format(db=SESSION_DB)
+                ),
             )
             return
 
-        # Authenticated but disconnected — normal blip, reconnect with backoff.
         if uptime >= _MIN_HEALTHY_SECS:
             delay = _backoff_init()
             log.info("neonize_will_reconnect", uptime_secs=int(uptime), retry_in=delay)
@@ -434,7 +611,6 @@ async def _async_run_with_retry() -> None:
 
 
 def _run_bot_loop() -> None:
-    """Entry point for the bot thread: create and run the event loop."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     global _async_loop
@@ -446,22 +622,16 @@ def _run_bot_loop() -> None:
         _async_loop = None
 
 
-# ── Public lifecycle API ──────────────────────────────────────────────────────
+# ── Stdout suppression ────────────────────────────────────────────────────────
 
 def _silence_neonize_stdout() -> None:
-    """Redirect stdout to /dev/null to suppress neonize/whatsmeow Go-layer prints.
+    # Previously redirected fd 1 to /dev/null, but that swallows ALL stdout
+    # including structlog JSON output, making the orchestrator log silent.
+    # Go-layer noise ("Press Ctrl+C to exit") is cosmetic — leave it.
+    pass
 
-    neonize prints XML stanzas, 'Press Ctrl+C to exit', and websocket frames
-    directly to fd 1. These bypass Python logging and cannot be filtered.
-    """
-    import os
-    try:
-        devnull_fd = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull_fd, 1)
-        os.close(devnull_fd)
-    except Exception:
-        pass
 
+# ── Public lifecycle API ──────────────────────────────────────────────────────
 
 async def start_neonize_bot() -> None:
     """Start the neonize bot with reconnect loop. No-op if already running."""
@@ -472,23 +642,22 @@ async def start_neonize_bot() -> None:
         return
 
     try:
-        from neonize.client import NewClient  # type: ignore  # noqa: F401
+        from neonize.client import ClientFactory  # type: ignore  # noqa: F401
     except ImportError:
         log.error("neonize_not_installed", hint="pip install neonize")
         return
 
-    _silence_neonize_stdout()
     _stop_event.clear()
     _bot_thread = threading.Thread(
         target=_run_bot_loop, daemon=True, name="neonize-bot"
     )
     _bot_thread.start()
-    log.info("neonize_bot_started")
+    log.info("neonize_bot_started", session_db=SESSION_DB)
 
 
 async def stop_neonize_bot() -> None:
     """Signal the retry loop to stop and disconnect the active client."""
-    global _client, _async_loop, _bot_thread
+    global _client, _factory, _async_loop, _bot_thread
 
     _stop_event.set()
 
@@ -498,6 +667,7 @@ async def stop_neonize_bot() -> None:
         except Exception as exc:
             log.warning("neonize_stop_error", error=str(exc))
         _client = None
+    _factory = None
 
     if _bot_thread is not None:
         _bot_thread.join(timeout=8)
@@ -506,9 +676,23 @@ async def stop_neonize_bot() -> None:
     log.info("neonize_bot_stopped")
 
 
+def get_connected_jid() -> str | None:
+    """Return the JID string of the connected device, or None."""
+    if _client is None:
+        return None
+    try:
+        me = _client.get_me()
+        return str(me.User) if me else None
+    except Exception:
+        return None
+
+
 __all__ = [
     "start_neonize_bot",
     "stop_neonize_bot",
     "send_message_standalone",
+    "send_image_standalone",
+    "send_document_standalone",
     "is_connected",
+    "get_connected_jid",
 ]

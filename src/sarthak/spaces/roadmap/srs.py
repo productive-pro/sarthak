@@ -20,10 +20,13 @@ Public API:
     sync_from_digest(db_path, digest_signals)  → int  (cards upserted)
     sync_note_card(db_path, note_id, concept)  → SRSCard
 """
+
 from __future__ import annotations
 
+import asyncio as _asyncio
 import math
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Literal
 
 import aiosqlite
@@ -37,6 +40,10 @@ CardType = Literal["concept", "note", "quicktest"]
 # ── Schema ─────────────────────────────────────────────────────────────────────
 
 _SCHEMA = """
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+PRAGMA foreign_keys=ON;
+
 CREATE TABLE IF NOT EXISTS srs_cards (
     card_id      TEXT PRIMARY KEY,
     card_type    TEXT NOT NULL DEFAULT 'concept',
@@ -52,6 +59,7 @@ CREATE TABLE IF NOT EXISTS srs_cards (
 );
 
 CREATE INDEX IF NOT EXISTS srs_cards_due ON srs_cards(next_due);
+CREATE INDEX IF NOT EXISTS srs_cards_due_order ON srs_cards(next_due, repetitions);
 CREATE INDEX IF NOT EXISTS srs_cards_concept ON srs_cards(concept);
 
 CREATE TABLE IF NOT EXISTS quicktest_srs (
@@ -68,11 +76,19 @@ CREATE TABLE IF NOT EXISTS quicktest_srs (
 
 # ── SRSCard ────────────────────────────────────────────────────────────────────
 
+
 class SRSCard:
     __slots__ = (
-        "card_id", "card_type", "concept", "reason",
-        "easiness", "interval", "repetitions",
-        "next_due", "last_grade", "total_reviews",
+        "card_id",
+        "card_type",
+        "concept",
+        "reason",
+        "easiness",
+        "interval",
+        "repetitions",
+        "next_due",
+        "last_grade",
+        "total_reviews",
     )
 
     def __init__(
@@ -91,33 +107,34 @@ class SRSCard:
         qt_id: str | None = None,
         **_: object,
     ) -> None:
-        self.card_id      = card_id or qt_id or ""
-        self.card_type    = card_type
-        self.concept      = concept or self.card_id
-        self.reason       = reason
-        self.easiness     = easiness
-        self.interval     = interval
-        self.repetitions  = repetitions
-        self.next_due     = next_due or str(date.today())
-        self.last_grade   = last_grade
+        self.card_id = card_id or qt_id or ""
+        self.card_type = card_type
+        self.concept = concept or self.card_id
+        self.reason = reason
+        self.easiness = easiness
+        self.interval = interval
+        self.repetitions = repetitions
+        self.next_due = next_due or str(date.today())
+        self.last_grade = last_grade
         self.total_reviews = total_reviews
 
     def to_dict(self) -> dict:
         return {
-            "card_id":      self.card_id,
-            "card_type":    self.card_type,
-            "concept":      self.concept,
-            "reason":       self.reason,
-            "easiness":     round(self.easiness, 3),
-            "interval":     self.interval,
-            "repetitions":  self.repetitions,
-            "next_due":     self.next_due,
-            "last_grade":   self.last_grade,
+            "card_id": self.card_id,
+            "card_type": self.card_type,
+            "concept": self.concept,
+            "reason": self.reason,
+            "easiness": round(self.easiness, 3),
+            "interval": self.interval,
+            "repetitions": self.repetitions,
+            "next_due": self.next_due,
+            "last_grade": self.last_grade,
             "total_reviews": self.total_reviews,
         }
 
 
 # ── SM-2 core ─────────────────────────────────────────────────────────────────
+
 
 def _sm2(card: SRSCard, grade: int) -> SRSCard:
     g = max(0, min(5, grade))
@@ -125,7 +142,7 @@ def _sm2(card: SRSCard, grade: int) -> SRSCard:
     new_ef = max(1.3, new_ef)
 
     if g < 3:
-        new_reps     = 0
+        new_reps = 0
         new_interval = 1
     else:
         new_reps = card.repetitions + 1
@@ -154,12 +171,12 @@ def _sm2(card: SRSCard, grade: int) -> SRSCard:
 def _initial_interval(initial_grade: int) -> int:
     """Starting interval based on evidence quality (0=unknown, 5=strong)."""
     if initial_grade >= 4:
-        return 4   # already known well — review in 4 days
+        return 4  # already known well — review in 4 days
     if initial_grade == 3:
         return 2
     if initial_grade == 2:
         return 1
-    return 1       # weak / unknown — review tomorrow
+    return 1  # weak / unknown — review tomorrow
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
@@ -168,8 +185,6 @@ def _initial_interval(initial_grade: int) -> int:
 # Eliminates the critical bug where _open() opened a fresh connection every
 # call and leaked it (callers never closed it — they used it as a ctx manager
 # but aiosqlite.Connection.__aexit__ does NOT close the connection).
-
-import asyncio as _asyncio
 
 _POOL: dict[str, tuple[aiosqlite.Connection, _asyncio.Lock]] = {}
 _POOL_LOCK = _asyncio.Lock()
@@ -200,14 +215,17 @@ async def _migrate_quicktest_srs(db: aiosqlite.Connection) -> None:
 
 
 async def _get_conn(db_path: str) -> tuple[aiosqlite.Connection, _asyncio.Lock]:
-    """Return the persistent (conn, write-lock) for db_path. Creates it on first call."""
-    from pathlib import Path
+    """Return the pooled connection and write lock for a database path."""
     norm_path = str(Path(db_path).resolve())
 
     async with _POOL_LOCK:
         if norm_path not in _POOL:
             conn = await aiosqlite.connect(norm_path)
             conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA synchronous=NORMAL")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.execute("PRAGMA cache_size=-8000")
             _POOL[norm_path] = (conn, _asyncio.Lock())
 
     conn, lock = _POOL[norm_path]
@@ -230,6 +248,7 @@ async def _get_conn(db_path: str) -> tuple[aiosqlite.Connection, _asyncio.Lock]:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+
 async def get_due(db_path: str) -> list[SRSCard]:
     """Return all cards due today or overdue, ordered by urgency."""
     today = str(date.today())
@@ -244,9 +263,7 @@ async def get_due(db_path: str) -> list[SRSCard]:
 
 async def card_status(db_path: str, card_id: str) -> SRSCard | None:
     db, _ = await _get_conn(db_path)
-    async with db.execute(
-        "SELECT * FROM srs_cards WHERE card_id=?", (card_id,)
-    ) as cur:
+    async with db.execute("SELECT * FROM srs_cards WHERE card_id=?", (card_id,)) as cur:
         row = await cur.fetchone()
     return SRSCard(**dict(row)) if row else None
 
@@ -254,25 +271,42 @@ async def card_status(db_path: str, card_id: str) -> SRSCard | None:
 async def record_review(db_path: str, card_id: str, grade: int) -> SRSCard:
     """Apply SM-2 to card_id. Grade 0-5 (0-2=fail, 3-5=pass). Upserts row."""
     existing = await card_status(db_path, card_id)
-    card     = existing or SRSCard(card_id=card_id)
-    updated  = _sm2(card, grade)
+    card = existing or SRSCard(card_id=card_id)
+    updated = _sm2(card, grade)
     db, lock = await _get_conn(db_path)
     async with lock:
         await db.execute(
-            """INSERT INTO srs_cards
+            """
+            INSERT INTO srs_cards
                  (card_id, card_type, concept, reason,
                   easiness, interval, repetitions, next_due, last_grade, total_reviews)
                VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(card_id) DO UPDATE SET
                  easiness=excluded.easiness, interval=excluded.interval,
                  repetitions=excluded.repetitions, next_due=excluded.next_due,
-                 last_grade=excluded.last_grade, total_reviews=excluded.total_reviews""",
-            (updated.card_id, updated.card_type, updated.concept, updated.reason,
-             updated.easiness, updated.interval, updated.repetitions,
-             updated.next_due, updated.last_grade, updated.total_reviews),
+                 last_grade=excluded.last_grade,
+                 total_reviews=excluded.total_reviews
+            """,
+            (
+                updated.card_id,
+                updated.card_type,
+                updated.concept,
+                updated.reason,
+                updated.easiness,
+                updated.interval,
+                updated.repetitions,
+                updated.next_due,
+                updated.last_grade,
+                updated.total_reviews,
+            ),
         )
         await db.commit()
-    log.info("srs_review_recorded", card_id=card_id, grade=grade, next_due=updated.next_due)
+    log.info(
+        "srs_review_recorded",
+        card_id=card_id,
+        grade=grade,
+        next_due=updated.next_due,
+    )
     return updated
 
 
@@ -298,7 +332,7 @@ async def upsert_card(
         return existing
 
     interval = _initial_interval(initial_grade)
-    next_due  = str(date.today() + timedelta(days=interval))
+    next_due = str(date.today() + timedelta(days=interval))
 
     if existing and initial_grade < 3:
         # Reset: weak evidence found — review soon
@@ -339,14 +373,28 @@ async def upsert_card(
                  easiness=excluded.easiness, interval=excluded.interval,
                  repetitions=excluded.repetitions, next_due=excluded.next_due,
                  total_reviews=excluded.total_reviews""",
-            (new_card.card_id, new_card.card_type, new_card.concept, new_card.reason,
-             new_card.easiness, new_card.interval, new_card.repetitions,
-             new_card.next_due, new_card.last_grade, new_card.total_reviews),
+            (
+                new_card.card_id,
+                new_card.card_type,
+                new_card.concept,
+                new_card.reason,
+                new_card.easiness,
+                new_card.interval,
+                new_card.repetitions,
+                new_card.next_due,
+                new_card.last_grade,
+                new_card.total_reviews,
+            ),
         )
         await db.commit()
 
-    log.info("srs_card_upserted", card_id=card_id, card_type=card_type,
-             concept=concept, interval=interval)
+    log.info(
+        "srs_card_upserted",
+        card_id=card_id,
+        card_type=card_type,
+        concept=concept,
+        interval=interval,
+    )
     return new_card
 
 
@@ -363,7 +411,7 @@ async def sync_note_card(db_path: str, note_id: str, concept: str) -> SRSCard:
         card_type="concept",
         concept=concept,
         reason="note written",
-        initial_grade=3,   # moderate: schedule review in 2 days
+        initial_grade=3,  # moderate: schedule review in 2 days
     )
 
 
@@ -372,6 +420,7 @@ class DigestSignals:
     Distilled signals from a daily digest / LearnerContext that drive SRS scheduling.
     All fields are concept name strings.
     """
+
     __slots__ = (
         "weak_concepts",
         "stuck_concepts",
@@ -390,11 +439,11 @@ class DigestSignals:
         strong_concepts: list[str] | None = None,
         recent_breakthroughs: list[str] | None = None,
     ) -> None:
-        self.weak_concepts        = weak_concepts or []
-        self.stuck_concepts       = stuck_concepts or []
-        self.no_note_concepts     = no_note_concepts or []
+        self.weak_concepts = weak_concepts or []
+        self.stuck_concepts = stuck_concepts or []
+        self.no_note_concepts = no_note_concepts or []
         self.test_failed_concepts = test_failed_concepts or []
-        self.strong_concepts      = strong_concepts or []
+        self.strong_concepts = strong_concepts or []
         self.recent_breakthroughs = recent_breakthroughs or []
 
 
@@ -438,7 +487,10 @@ async def sync_from_digest(db_path: str, signals: DigestSignals) -> int:
             count += 1
 
     for concept in signals.weak_concepts:
-        if concept not in signals.stuck_concepts and concept not in signals.test_failed_concepts:
+        if (
+            concept not in signals.stuck_concepts
+            and concept not in signals.test_failed_concepts
+        ):
             await upsert_card(
                 db_path,
                 card_id=f"concept:{concept}",
@@ -483,6 +535,7 @@ async def sync_from_digest(db_path: str, signals: DigestSignals) -> int:
 
 # ── Legacy compat (quicktest_srs API) ─────────────────────────────────────────
 
+
 async def srs_status(db_path: str, qt_id: str) -> SRSCard | None:
     """Legacy: look up by old quicktest ID. Falls back to srs_cards."""
     card = await card_status(db_path, qt_id)
@@ -490,11 +543,14 @@ async def srs_status(db_path: str, qt_id: str) -> SRSCard | None:
         return card
     # Check old quicktest_srs table
     db, _ = await _get_conn(db_path)
-    async with db.execute(
-        "SELECT * FROM quicktest_srs WHERE qt_id=?", (qt_id,)
-    ) as cur:
+    async with db.execute("SELECT * FROM quicktest_srs WHERE qt_id=?", (qt_id,)) as cur:
         row = await cur.fetchone()
     if row:
         d = dict(row)
-        return SRSCard(card_id=d["qt_id"], card_type="quicktest", concept=d["qt_id"], **d)
+        return SRSCard(
+            card_id=d["qt_id"],
+            card_type="quicktest",
+            concept=d["qt_id"],
+            **d,
+        )
     return None

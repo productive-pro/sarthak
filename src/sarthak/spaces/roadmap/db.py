@@ -5,6 +5,7 @@ One DB per space: .spaces/<n>/sarthak.db
 Tables: roadmap (JSON blob), notes, quicktests, files
 Audio/video blobs: .spaces/<n>/media/<id>.<ext> (path stored in DB)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +26,7 @@ from .models import (
 
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS roadmap (
@@ -72,7 +74,11 @@ CREATE TABLE IF NOT EXISTS digest_cache (
 
 CREATE INDEX IF NOT EXISTS notes_concept ON notes(concept_id);
 CREATE INDEX IF NOT EXISTS notes_type    ON notes(type);
+CREATE INDEX IF NOT EXISTS notes_concept_created ON notes(concept_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS notes_type_created    ON notes(type, created_at DESC);
 CREATE INDEX IF NOT EXISTS qt_concept    ON quicktests(concept_id);
+CREATE INDEX IF NOT EXISTS qt_concept_created
+    ON quicktests(concept_id, created_at DESC);
 """
 
 
@@ -90,6 +96,16 @@ def _media_dir(space_dir: Path) -> Path:
     d = space_dir / ".spaces" / "media"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+async def _open_conn(db_path: str) -> aiosqlite.Connection:
+    conn = await aiosqlite.connect(db_path)
+    conn.row_factory = aiosqlite.Row
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute("PRAGMA synchronous=NORMAL")
+    await conn.execute("PRAGMA foreign_keys=ON")
+    await conn.execute("PRAGMA cache_size=-8000")
+    return conn
 
 
 # Track which DB paths have been fully initialised in this process.
@@ -113,8 +129,7 @@ class RoadmapDB:
         """Create connection + write lock if missing, without running init()."""
         async with _POOL_LOCK:
             if self._key not in _CONN_POOL:
-                conn = await aiosqlite.connect(self._key)
-                conn.row_factory = aiosqlite.Row
+                conn = await _open_conn(self._key)
                 _CONN_POOL[self._key] = (conn, asyncio.Lock())
         return _CONN_POOL[self._key]
 
@@ -212,7 +227,8 @@ class RoadmapDB:
         async with lock:
             await db.execute(
                 "INSERT INTO roadmap(id,blob,updated) VALUES(1,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET blob=excluded.blob, updated=excluded.updated",
+                "ON CONFLICT(id) DO UPDATE SET "
+                "blob=excluded.blob, updated=excluded.updated",
                 (blob, _now()),
             )
             await db.commit()
@@ -234,10 +250,23 @@ class RoadmapDB:
         db, lock = await self._wconn()
         async with lock:
             await db.execute(
-                "INSERT INTO notes(id,chapter_id,topic_id,concept_id,title,body_md,type,audio_path,video_path,created_at) "
+                "INSERT INTO notes("
+                "id,chapter_id,topic_id,concept_id,title,"
+                "body_md,type,audio_path,video_path,created_at"
+                ") "
                 "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (note.id, note.chapter_id, note.topic_id, note.concept_id,
-                 note.title, note.body_md, note.type, note.audio_path, note.video_path, note.created_at),
+                (
+                    note.id,
+                    note.chapter_id,
+                    note.topic_id,
+                    note.concept_id,
+                    note.title,
+                    note.body_md,
+                    note.type,
+                    note.audio_path,
+                    note.video_path,
+                    note.created_at,
+                ),
             )
             await db.commit()
         return note
@@ -248,7 +277,7 @@ class RoadmapDB:
         title: str | None = None,
         body_md: str | None = None,
     ) -> NoteRow | None:
-        """Update a note's title and/or body_md. None values leave the column unchanged."""
+        """Update a note's title and/or body without overwriting omitted fields."""
         sets: list[str] = []
         params: list[object] = []
         if title is not None:
@@ -320,10 +349,21 @@ class RoadmapDB:
         db, lock = await self._wconn()
         async with lock:
             await db.execute(
-                "INSERT INTO quicktests(id,chapter_id,topic_id,concept_id,prompt,response_md,input_mode,created_at) "
+                "INSERT INTO quicktests("
+                "id,chapter_id,topic_id,concept_id,prompt,"
+                "response_md,input_mode,created_at"
+                ") "
                 "VALUES(?,?,?,?,?,?,?,?)",
-                (qt.id, qt.chapter_id, qt.topic_id, qt.concept_id,
-                 qt.prompt, qt.response_md, qt.input_mode, qt.created_at),
+                (
+                    qt.id,
+                    qt.chapter_id,
+                    qt.topic_id,
+                    qt.concept_id,
+                    qt.prompt,
+                    qt.response_md,
+                    qt.input_mode,
+                    qt.created_at,
+                ),
             )
             await db.commit()
         return qt
@@ -348,7 +388,8 @@ class RoadmapDB:
         async with lock:
             await db.execute(
                 "INSERT INTO files(id,path,linked_to) VALUES(?,?,?) "
-                "ON CONFLICT(path) DO UPDATE SET linked_to=excluded.linked_to, id=files.id",
+                "ON CONFLICT(path) DO UPDATE SET "
+                "linked_to=excluded.linked_to, id=files.id",
                 (fl.id, fl.path, linked_json),
             )
             await db.commit()
@@ -366,17 +407,28 @@ class RoadmapDB:
 
     async def index_workspace_files(self) -> int:
         space_dir = self._space_dir
-        count = 0
+        rows: list[tuple[str, str, str]] = []
         skip_dirs = {".spaces", ".git", "__pycache__", "node_modules", ".venv"}
         for p in space_dir.rglob("*"):
             if p.is_dir():
                 continue
-            if any(part in skip_dirs for part in p.parts[len(space_dir.parts):]):
+            if any(part in skip_dirs for part in p.parts[len(space_dir.parts) :]):
                 continue
             rel = str(p.relative_to(space_dir))
-            await self.upsert_file(FileLink(path=rel))
-            count += 1
-        return count
+            file_link = FileLink(path=rel)
+            rows.append((file_link.id, file_link.path, "[]"))
+        if not rows:
+            return 0
+        db, lock = await self._wconn()
+        async with lock:
+            await db.executemany(
+                "INSERT INTO files(id,path,linked_to) VALUES(?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "linked_to=excluded.linked_to, id=files.id",
+                rows,
+            )
+            await db.commit()
+        return len(rows)
 
     # ── Audio/video paths ──────────────────────────────────────────────────────
 
@@ -389,6 +441,7 @@ class RoadmapDB:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _deep_merge(target: dict, patch: dict) -> None:
     """RFC 7396 JSON Merge Patch — mutates target in place."""

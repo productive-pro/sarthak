@@ -48,10 +48,16 @@ This walks you through choosing an AI provider, adding your API key, and setting
 ## Starting Sarthak
 
 ```bash
-sarthak orchestrator
+sarthak service install
 ```
 
-This starts everything the web UI, and the agent scheduler. Then open [http://localhost:4848](http://localhost:4848) in your browser.
+This registers Sarthak as a background service (systemd / launchd / Task Scheduler) and starts everything: the web UI, agent scheduler, and capture daemons. Then open [http://localhost:4848](http://localhost:4848) in your browser.
+
+To start without installing as a service:
+
+```bash
+sarthak orchestrator
+```
 
 ## Checking that everything works
 

@@ -9,18 +9,37 @@ never from the backend directly.
 
 Backward compatible: same function signatures as before.
 """
+
 from __future__ import annotations
 
 from typing import Literal
 
 ActivityType = Literal[
-    "audio_note", "video_note", "code_run", "chat",
-    "file_upload", "practice_test", "quicktest", "note",
+    "audio_note",
+    "video_note",
+    "code_run",
+    "chat",
+    "file_upload",
+    "practice_test",
+    "quicktest",
+    "note",
 ]
+
+_MAX_QUERY_DAYS = 3650
+_MAX_QUERY_LIMIT = 5000
+
+
+def _bounded_int(value: int, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(parsed, maximum))
 
 
 def _repo():
     from sarthak.storage.factory import get_activity_repo
+
     return get_activity_repo()
 
 
@@ -30,7 +49,9 @@ async def _get_concept_title(space_dir: str, concept_id: str, db_obj=None) -> st
         return ""
     try:
         from pathlib import Path
+
         from sarthak.spaces.roadmap.db import RoadmapDB
+
         db = db_obj or RoadmapDB(Path(space_dir))
         if db_obj is None:
             await db.init()
@@ -104,6 +125,8 @@ async def query_activity(
     limit: int = 200,
 ) -> list[dict]:
     """Return activity rows, newest first, filtered by optional dimensions."""
+    days = _bounded_int(days, default=30, minimum=1, maximum=_MAX_QUERY_DAYS)
+    limit = _bounded_int(limit, default=200, minimum=1, maximum=_MAX_QUERY_LIMIT)
     return await _repo().query(
         space_dir=space_dir,
         activity_type=activity_type,
@@ -115,6 +138,7 @@ async def query_activity(
 
 async def activity_summary(space_dir: str, days: int = 7) -> dict:
     """Aggregate counts by activity_type for a space."""
+    days = _bounded_int(days, default=7, minimum=1, maximum=_MAX_QUERY_DAYS)
     return await _repo().summary(space_dir, days)
 
 
@@ -125,16 +149,20 @@ async def recent_code_runs(space_dir: str, limit: int = 10) -> list[dict]:
 
 
 async def recent_media_notes(space_dir: str, days: int = 14) -> list[dict]:
+    days = _bounded_int(days, default=14, minimum=1, maximum=_MAX_QUERY_DAYS)
     return await _repo().recent_media_notes(space_dir, days)
 
 
 async def failed_code_run_concepts(
     space_dir: str, threshold: int = 3, days: int = 30
 ) -> list[str]:
+    threshold = _bounded_int(threshold, default=3, minimum=1, maximum=1000)
+    days = _bounded_int(days, default=30, minimum=1, maximum=_MAX_QUERY_DAYS)
     return await _repo().failed_code_concepts(space_dir, threshold, days)
 
 
 async def concepts_touched(space_dir: str, days: int = 14) -> list[str]:
+    days = _bounded_int(days, default=14, minimum=1, maximum=_MAX_QUERY_DAYS)
     return await _repo().concepts_touched(space_dir, days)
 
 
@@ -154,5 +182,8 @@ async def prune_activity(space_dir: str, keep_days: int = 90) -> int:
     """
     repo = _repo()
     if hasattr(repo, "prune"):
+        keep_days = _bounded_int(
+            keep_days, default=90, minimum=1, maximum=_MAX_QUERY_DAYS
+        )
         return await repo.prune(space_dir, keep_days)
     return 0

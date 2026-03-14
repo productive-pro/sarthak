@@ -11,13 +11,11 @@ Routes:
 
 Design notes
 ------------
-QR login is done through a *separate* temporary neonize client so the
-running neonize_bot is never interrupted mid-session. Once pairing
-completes both share the same SESSION_DB file, so the bot thread picks up
-the new credentials on its next connect (or restart).
+QR login uses a *temporary* ClientFactory with the same SESSION_DB path so
+credentials are written to the right file and the bot thread picks them up
+on its next connect (or restart).
 
-Only one QR stream can be active at a time (_qr_lock). A second request
-waits rather than spawning a conflicting client.
+Only one QR stream can be active at a time (_qr_lock).
 """
 from __future__ import annotations
 
@@ -25,23 +23,22 @@ import asyncio
 import base64
 import io
 import json
+import threading
 from typing import AsyncGenerator
 
 import structlog
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from sarthak.features.channels.whatsapp import SESSION_DB as _SESSION_DB, SESSION_NAME as _SESSION_NAME
+from sarthak.features.channels.whatsapp import SESSION_DB
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/channels/whatsapp", tags=["whatsapp-qr"])
 
-# Serialise QR requests — only one pairing attempt at a time.
 _qr_lock = asyncio.Lock()
 
 
 def _png_data_url(qr_text: str) -> str:
-    """Render QR text to a PNG data-URL using the qrcode library."""
     import qrcode  # type: ignore
     img = qrcode.make(qr_text)
     buf = io.BytesIO()
@@ -50,7 +47,6 @@ def _png_data_url(qr_text: str) -> str:
 
 
 def _sse(data: dict) -> str:
-    """Format one SSE data frame."""
     return f"data: {json.dumps(data)}\n\n"
 
 
@@ -61,8 +57,8 @@ async def _qr_stream() -> AsyncGenerator[str, None]:
         return
 
     try:
-        from neonize.client import NewClient  # type: ignore
-        from neonize.events import ConnectedEv, DisconnectedEv  # type: ignore
+        from neonize.client import ClientFactory  # type: ignore
+        from neonize.events import ConnectedEv, DisconnectedEv, OfflineSyncCompletedEv  # type: ignore
     except ImportError:
         yield _sse({"type": "error", "msg": "neonize not installed — run: pip install neonize"})
         return
@@ -71,9 +67,14 @@ async def _qr_stream() -> AsyncGenerator[str, None]:
         queue: asyncio.Queue[dict] = asyncio.Queue()
         loop = asyncio.get_event_loop()
 
-        # Temporary client solely for pairing — shares SESSION_NAME so credentials
-        # are written to the same DB the bot thread reads.
-        client = NewClient(_SESSION_NAME)
+        factory = ClientFactory(database_name=SESSION_DB)
+        client = factory.new_client(uuid="sarthak-bot")
+
+        # Fired when WhatsApp completes app-state sync after pairing.
+        # We MUST wait for this before disconnecting — tearing down earlier
+        # leaves 0 signal sessions in the DB and WhatsApp removes the device
+        # on the next connect with stream error / EOF.
+        _sync_done = threading.Event()
 
         def on_qr(_, data: bytes) -> None:
             try:
@@ -92,13 +93,18 @@ async def _qr_stream() -> AsyncGenerator[str, None]:
                 jid = ""
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "connected", "jid": jid})
 
+        @client.event(OfflineSyncCompletedEv)
+        def on_sync_done(_cl, _ev) -> None:
+            _sync_done.set()
+            loop.call_soon_threadsafe(queue.put_nowait, {"type": "synced"})
+
         @client.event(DisconnectedEv)
         def on_disconnect(_cl, _ev) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, {"type": "disconnected"})
 
-        # client.connect() blocks — run in thread pool.
         connect_task = asyncio.create_task(asyncio.to_thread(client.connect))
         try:
+            jid_val = ""
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=120.0)
@@ -106,13 +112,28 @@ async def _qr_stream() -> AsyncGenerator[str, None]:
                     yield _sse({"type": "error", "msg": "QR scan timed out (120 s). Try again."})
                     break
 
+                if event["type"] == "synced":
+                    # Sync complete — safe to disconnect now
+                    log.info("whatsapp_qr_sync_complete", jid=jid_val)
+                    break
+
                 yield _sse(event)
 
                 if event["type"] == "connected":
-                    log.info("whatsapp_qr_connected", jid=event.get("jid"))
-                    # Update config.toml jid so the bot knows who to accept messages from.
-                    _persist_jid(str(event.get("jid", "")))
+                    jid_val = str(event.get("jid", ""))
+                    log.info("whatsapp_qr_connected", jid=jid_val)
+                    _persist_jid(jid_val)
+                    # Stay connected and wait for OfflineSyncCompletedEv (up to 45 s)
+                    # before tearing down — do NOT break here.
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(None, lambda: _sync_done.wait(45)),
+                            timeout=46,
+                        )
+                    except Exception:
+                        pass
                     break
+
                 if event["type"] in ("error", "disconnected"):
                     break
         finally:
@@ -142,7 +163,7 @@ def _persist_jid(jid: str) -> None:
         log.warning("whatsapp_jid_persist_failed", error=str(exc))
 
 
-# ── Routes ──────────────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/qr")
 async def get_qr():
@@ -158,23 +179,31 @@ async def get_qr():
 async def get_status():
     """Live connection status from the neonize bot thread."""
     from sarthak.features.channels.whatsapp import is_connected
+    from sarthak.features.channels.whatsapp.neonize_bot import get_connected_jid
     from sarthak.core.config import load_config
     cfg = load_config()
-    jid = str(cfg.get("whatsapp", {}).get("jid", "")) or None
-    return {"connected": is_connected(), "jid": jid if is_connected() else None}
+    cfg_jid = str(cfg.get("whatsapp", {}).get("jid", "")) or None
+    connected = is_connected()
+    live_jid = get_connected_jid() if connected else None
+    return {
+        "connected": connected,
+        "jid": live_jid or (cfg_jid if connected else None),
+        "session_db": SESSION_DB,
+    }
 
 
 @router.post("/logout")
 async def logout():
     """Stop the bot, delete the session DB, clear config jid."""
     from sarthak.features.channels.whatsapp.neonize_bot import stop_neonize_bot
+    from pathlib import Path
     await stop_neonize_bot()
 
-    if _SESSION_DB.exists():
-        _SESSION_DB.unlink()
-        log.info("whatsapp_session_deleted")
+    db_path = Path(SESSION_DB)
+    if db_path.exists():
+        db_path.unlink()
+        log.info("whatsapp_session_deleted", path=SESSION_DB)
 
-    # Clear jid from config so the bot doesn't auto-restart with stale creds.
     try:
         import tomlkit
         from sarthak.core.config import get_config_path
