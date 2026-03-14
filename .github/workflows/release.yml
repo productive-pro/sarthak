@@ -166,6 +166,8 @@ jobs:
       # Trusted publishing — no PYPI_TOKEN secret needed.
       # One-time setup: https://pypi.org/manage/account/publishing/
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          verbose: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 4 — Create GitHub Release with ALL assets attached
