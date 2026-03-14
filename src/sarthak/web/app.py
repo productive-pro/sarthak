@@ -27,7 +27,7 @@ from sarthak.web.routers import (
     spaces_router,
     spa_router,
 )
-from sarthak.features.channels.whatsapp.bot import router as whatsapp_router
+from sarthak.features.channels.whatsapp.qr import router as whatsapp_qr_router
 
 log = get_logger(__name__)
 
@@ -55,7 +55,7 @@ app.include_router(config_router)
 app.include_router(spaces_router)
 app.include_router(agents_router)
 app.include_router(activity_router)
-app.include_router(whatsapp_router)
+app.include_router(whatsapp_qr_router)  # /api/channels/whatsapp/qr|status|logout
 
 
 # ── Per-space roadmap router — MUST come after all fixed /api/spaces/... paths ─

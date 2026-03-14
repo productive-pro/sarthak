@@ -48,7 +48,7 @@ async def send_whatsapp(cfg: dict, message: str, agent_id: str = "") -> None:
         wa = cfg.get("whatsapp", {})
         if not wa.get("enabled"):
             return
-        from sarthak.features.channels.whatsapp.client import send_message_standalone
+        from sarthak.features.channels.whatsapp import send_message_standalone
         await send_message_standalone(message)
         if agent_id:
             log.info("whatsapp_sent", agent_id=agent_id)

@@ -1,19 +1,18 @@
 """
-Sarthak AI — WhatsApp Bot (Meta Cloud API webhook).
+Meta Cloud API webhook — REMOVED.
 
-Two routes mounted on the FastAPI app:
-  GET  /webhook/whatsapp  — Meta verification handshake
-  POST /webhook/whatsapp  — Incoming messages
+Sarthak uses neonize QR-login only. See neonize_bot.py.
 
-Auth: only messages from cfg[whatsapp][allowed_phone] are processed.
-
-Message flow (mirrors Telegram):
-  incoming text → stream_dispatch() → buffer full reply → send_message()
-
-Commands (text-based, no inline keyboards):
-  /start /today /learn /digest /srs /roadmap /notes /status /spaces /help
-  Everything else → free-text → orchestrator
+This file exists only to give a clear ImportError if anything still imports
+the old `router` symbol; remove that import from web/app.py and you can
+delete this file entirely.
 """
+raise ImportError(
+    "bot.py (Meta webhook) has been removed. "
+    "WhatsApp is now handled entirely by neonize_bot.py. "
+    "Remove 'from sarthak.features.channels.whatsapp.bot import router' "
+    "from web/app.py and any other callers."
+)
 from __future__ import annotations
 
 import uuid
@@ -179,9 +178,18 @@ async def _run_handler(run_key: str) -> str:
     from sarthak.features.channels.telegram.bot import _RUN_HANDLERS, _CTX_HANDLERS
     try:
         if run_key in _CTX_HANDLERS:
-            return await _CTX_HANDLERS[run_key](None, None)  # pool=None, ctx=None
+            # _CTX_HANDLERS functions accept (pool, ctx); ctx=None triggers the
+            # get_active_space() fallback path inside each handler, which is correct
+            # for WhatsApp where there is no per-message Telegram context.
+            return await _CTX_HANDLERS[run_key](None, None)
         if run_key in _RUN_HANDLERS:
+            # _RUN_HANDLERS functions accept (pool,); pool=None is fine because
+            # all of them now call get_activity_repo() internally.
             return await _RUN_HANDLERS[run_key](None)
+    except AttributeError as exc:
+        # ctx.user_data access on ctx=None — indicates handler needs ctx.
+        log.warning("whatsapp_handler_needs_ctx", run_key=run_key, error=str(exc))
+        return f"Command /{run_key} requires an active space. Set one via the web UI first."
     except Exception as exc:
         log.error("whatsapp_run_handler_failed", run_key=run_key, error=str(exc))
         return f"Error running {run_key}: {exc}"

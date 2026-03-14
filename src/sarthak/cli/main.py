@@ -395,6 +395,87 @@ def uninstall():
     click.echo(f"\n  {GR}✓{RS}  Sarthak AI has been uninstalled. Goodbye!\n")
 
 
+@main.group()
+def channels():
+    """Manage communication channels (Telegram, WhatsApp)."""
+
+
+@channels.command("status")
+def channels_status():
+    """Show connection status for all configured channels."""
+    import socket
+    from pathlib import Path
+
+    GR = "\033[38;5;82m"; YL = "\033[38;5;227m"; RD = "\033[38;5;196m"
+    CY = "\033[38;5;87m"; DM = "\033[38;5;240m"; BD = "\033[1m"; RS = "\033[0m"
+
+    def _on(label, detail=""):  click.echo(f"  {GR}+{RS} {BD}{label}{RS}  {DM}{detail}{RS}")
+    def _off(label, detail=""): click.echo(f"  {YL}-{RS} {BD}{label}{RS}  {DM}{detail}{RS}")
+    def _err(label, detail=""): click.echo(f"  {RD}x{RS} {BD}{label}{RS}  {DM}{detail}{RS}")
+
+    click.echo(f"\n{CY}{BD}  Sarthak — Channel Status{RS}\n")
+
+    try:
+        from sarthak.core.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        _err("Config", str(exc))
+        return
+
+    # ── Web ──────────────────────────────────────────────────────────────────
+    web = cfg.get("web", {})
+    host, port = str(web.get("host", "127.0.0.1")), int(web.get("port", 4848))
+    if web.get("enabled"):
+        sock = socket.socket()
+        sock.settimeout(1.0)
+        try:
+            sock.connect((host, port))
+            _on("Web UI", f"http://localhost:{port}")
+        except Exception:
+            _off("Web UI", f"not reachable at {host}:{port} (orchestrator running?)")
+        finally:
+            sock.close()
+    else:
+        _off("Web UI", "disabled")
+
+    # ── Telegram ─────────────────────────────────────────────────────────────
+    tg = cfg.get("telegram", {})
+    if tg.get("enabled"):
+        from sarthak.storage.encrypt import decrypt_string
+        raw = tg.get("bot_token", "")
+        has_token = bool(raw)
+        uid = tg.get("allowed_user_id", "")
+        if has_token:
+            _on("Telegram", f"user_id={uid}")
+        else:
+            _err("Telegram", "enabled but bot_token not set — run: sarthak configure")
+    else:
+        _off("Telegram", "disabled")
+
+    # ── WhatsApp ─────────────────────────────────────────────────────────────
+    wa = cfg.get("whatsapp", {})
+    if wa.get("enabled"):
+        jid = str(wa.get("jid", "")).strip()
+        from sarthak.features.channels.whatsapp import SESSION_DB, is_connected
+        session_ok = SESSION_DB.exists()
+        connected  = is_connected()
+        if connected:
+            _on("WhatsApp", f"connected  jid={jid}")
+        elif session_ok and jid:
+            _off("WhatsApp", f"session on disk, bot not running  jid={jid}  (start: sarthak orchestrator)")
+        elif jid:
+            _off("WhatsApp", f"jid set but no session DB — run: sarthak configure → Channels → WhatsApp")
+        else:
+            _err("WhatsApp", "enabled but not paired — run: sarthak configure → Channels → WhatsApp")
+    else:
+        _off("WhatsApp", "disabled")
+
+    click.echo()
+
+
+main.add_command(channels)
+
+
 @main.command()
 def orchestrator():
     """Start all Sarthak services in the foreground."""

@@ -1,12 +1,9 @@
 """
-WhatsApp Meta Cloud API — thin sender client.
+Meta Cloud API sender — REMOVED.
 
-Usage:
-    # In-context (when you have cfg):
-    await send_message(cfg, to="+91...", text="Hello")
-
-    # Standalone (reads config itself, used by scheduler/runner):
-    await send_message_standalone("Agent output here")
+Sarthak uses neonize QR-login only.
+For standalone push notifications use:
+  from sarthak.features.channels.whatsapp import send_message_standalone
 """
 from __future__ import annotations
 

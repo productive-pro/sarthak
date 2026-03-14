@@ -55,7 +55,7 @@ async def run_agent(spec: AgentSpec) -> AgentRun:
 
     if getattr(spec, "notify_whatsapp", False) and run.output:
         try:
-            from sarthak.features.channels.whatsapp.client import send_message_standalone
+            from sarthak.features.channels.whatsapp import send_message_standalone
             await send_message_standalone(run.output[:3800])
         except Exception as exc:
             log.warning("whatsapp_notify_failed", agent_id=spec.agent_id, error=str(exc))

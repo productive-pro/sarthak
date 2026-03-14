@@ -841,8 +841,8 @@ def _section_telegram(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
 def _configure_whatsapp_qr(toml_data: dict) -> bool:
     """Run neonize QR login in the terminal (ASCII QR, no browser).
 
-    Blocks until the user scans the code or 120 s elapse.
-    Saves whatsapp.mode = "qr" and whatsapp.jid to toml_data.
+    Blocks until the user scans or 120 s elapse.
+    Writes whatsapp.jid, mode=qr, enabled=true to toml_data.
     Returns toml_dirty.
     """
     hdr("WhatsApp — QR Login (neonize)")
@@ -863,8 +863,7 @@ def _configure_whatsapp_qr(toml_data: dict) -> bool:
     done = threading.Event()
     client = NewClient(_SESSION_NAME)
 
-    # QR callback receives (client, raw bytes) — no protobuf wrapper
-    def on_qr(_, data: bytes):
+    def on_qr(_, data: bytes) -> None:
         # Render QR as ASCII directly in the terminal — no PNG, no browser
         qr = qrcode.QRCode(border=1)
         qr.add_data(data.decode("utf-8", errors="replace"))
@@ -877,7 +876,7 @@ def _configure_whatsapp_qr(toml_data: dict) -> bool:
     client.event.qr(on_qr)
 
     @client.event(ConnectedEv)
-    def on_connected(cl, ev):
+    def on_connected(cl, ev) -> None:
         try:
             result["jid"] = cl.me.JID.User if getattr(cl, "me", None) else ""
         except Exception:
@@ -900,104 +899,176 @@ def _configure_whatsapp_qr(toml_data: dict) -> bool:
 
     jid = result.get("jid", "")
     ok(f"WhatsApp connected  [{jid}]")
-    _sv(toml_data, ["whatsapp", "mode"], "qr")
-    _sv(toml_data, ["whatsapp", "jid"], jid)
+    _sv(toml_data, ["whatsapp", "jid"],     jid)
+    _sv(toml_data, ["whatsapp", "mode"],    "qr")
     _sv(toml_data, ["whatsapp", "enabled"], True)
     return True
 
 
-def _section_whatsapp(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
-    """Configure WhatsApp channel — choose Meta Cloud API or QR login. Returns (toml_dirty, secrets_dirty)."""
-    from sarthak.storage.encrypt import encrypt_string
+def _section_whatsapp_settings(toml_data: dict) -> bool:
+    """Edit all neonize-relevant WhatsApp settings. Returns toml_dirty.
+
+    Settings map to config.toml [whatsapp] keys consumed by neonize_bot.py:
+
+      push_name        — display name shown to contacts (default: "Sarthak")
+      allow_groups     — accept messages from group chats (default: false)
+      send_read_receipt — mark messages read after replying (default: true)
+      send_presence    — set online/available during active sessions (default: false)
+      reconnect_backoff_max  — max reconnect wait in seconds (default: 300)
+      reconnect_backoff_init — initial reconnect wait in seconds (default: 5)
+      session_timeout  — neonize QR session validity in seconds (default: 120)
+      proxy            — HTTP/SOCKS5 proxy URL, blank = none
+    """
+    hdr("WhatsApp — neonize Settings")
+
+    # (label, path, hint, default_value)
+    settings: list[tuple[str, list[str], str, str]] = [
+        ("Push name",            ["whatsapp", "push_name"],           "Display name shown to contacts", "Sarthak"),
+        ("Reconnect backoff max",["whatsapp", "reconnect_backoff_max"],"Max wait between reconnects (s)", "300"),
+        ("Reconnect backoff init",["whatsapp","reconnect_backoff_init"],"Initial reconnect wait (s)", "5"),
+        ("QR session timeout",   ["whatsapp", "session_timeout"],     "Seconds to wait for QR scan", "120"),
+        ("Proxy URL",            ["whatsapp", "proxy"],               "HTTP/SOCKS5 proxy e.g. socks5://127.0.0.1:9050 (blank = none)", ""),
+    ]
+    bool_settings: list[tuple[str, list[str], str, bool]] = [
+        ("Allow group messages",  ["whatsapp", "allow_groups"],       "Accept messages from group chats", False),
+        ("Send read receipts",    ["whatsapp", "send_read_receipt"],  "Mark messages read after replying", True),
+        ("Send presence (online)",["whatsapp", "send_presence"],      "Appear online during active sessions", False),
+    ]
 
     toml_dirty = False
-    secrets_dirty = False
+    while True:
+        str_choices = [
+            questionary.Choice(
+                f"  {label:<28} [{_gv(toml_data, path, default)}]",
+                value=label,
+            )
+            for label, path, _, default in settings
+        ]
+        bool_choices = [
+            questionary.Choice(
+                f"  {label:<28} [{'on' if _gv(toml_data, path, str(default).lower()) not in ('false','0','') else 'off'}]",
+                value=label,
+            )
+            for label, path, _, default in bool_settings
+        ]
+        all_choices = (
+            str_choices
+            + [questionary.Separator("── toggles ──")]
+            + bool_choices
+            + [questionary.Separator(), questionary.Choice("  <- Back", value="__back__")]
+        )
 
-    hdr("WhatsApp")
+        sel = q_select("Setting", choices=all_choices, style=_STYLE, pointer=_POINTER).ask()
+        if sel in (None, "__back__"):
+            break
 
-    cur_mode = _gv(toml_data, ["whatsapp", "mode"], "meta")
-    mode = q_select(
-        "Connection mode",
-        choices=[
-            questionary.Choice("  meta  — Meta Cloud API (webhook, needs developer app)", value="meta"),
-            questionary.Choice("  qr    — QR login via neonize (personal account, no cloud setup)", value="qr"),
-        ],
-        default=cur_mode if cur_mode in ("meta", "qr") else "meta",
-        style=_STYLE,
-        pointer=_POINTER,
-    ).ask()
-    if mode is None:
-        return toml_dirty, secrets_dirty
+        # String settings
+        str_entry = next((e for e in settings if e[0] == sel), None)
+        if str_entry:
+            label, path, hint, default = str_entry
+            cur = _gv(toml_data, path, default)
+            dim(hint)
+            new = q_text(label, default=cur, style=_STYLE).ask()
+            if new is not None and new != cur:
+                _sv(toml_data, path, new)
+                ok(f"{label} → {new or '(cleared)'}")
+                toml_dirty = True
+            continue
 
-    if mode == "qr":
-        toml_dirty |= _configure_whatsapp_qr(toml_data)
-        return toml_dirty, secrets_dirty
+        # Bool settings
+        bool_entry = next((e for e in bool_settings if e[0] == sel), None)
+        if bool_entry:
+            label, path, hint, default = bool_entry
+            cur_str = _gv(toml_data, path, str(default).lower())
+            cur_bool = cur_str not in ("false", "0", "")
+            dim(hint)
+            new_bool = q_confirm(label, default=cur_bool, style=_STYLE).ask()
+            if new_bool is not None and new_bool != cur_bool:
+                _sv(toml_data, path, new_bool)
+                ok(f"{label} → {'on' if new_bool else 'off'}")
+                toml_dirty = True
 
-    # ── Meta Cloud API ─────────────────────────────────────────────────────
-    dim("Requires a Meta Developer App with WhatsApp product enabled.")
-    dim("Get credentials at: https://developers.facebook.com/apps")
-    dim("Webhook URL to register in Meta dashboard: https://<your-host>/webhook/whatsapp")
+    return toml_dirty
 
-    wa_enabled = _gv(toml_data, ["whatsapp", "enabled"], "false").lower()
-    enabled = q_confirm(
-        "Enable WhatsApp channel?",
-        default=(wa_enabled == "true"),
-        style=_STYLE,
-    ).ask()
-    if enabled is None:
-        return toml_dirty, secrets_dirty
-    if str(enabled).lower() != wa_enabled:
-        _sv(toml_data, ["whatsapp", "enabled"], str(enabled).lower())
-        toml_dirty = True
 
-    # Phone Number ID
-    cur_phone_id = _gv(toml_data, ["whatsapp", "phone_number_id"], "")
-    dim("Found in Meta dashboard → WhatsApp → Getting Started → Phone number ID")
-    new_phone_id = q_text("Phone Number ID", default=cur_phone_id, style=_STYLE).ask()
-    if new_phone_id and new_phone_id != cur_phone_id:
-        _sv(toml_data, ["whatsapp", "phone_number_id"], new_phone_id)
-        toml_dirty = True
+def _section_whatsapp(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
+    """Configure WhatsApp via neonize. Returns (toml_dirty, secrets_dirty)."""
+    toml_dirty    = False
+    secrets_dirty = False  # kept for call-site compat
 
-    # Access Token
-    cur_token_raw = _gv(toml_data, ["whatsapp", "access_token"], "")
-    dim(f"Access token {'(set)' if cur_token_raw else '(unset)'} — permanent System User token recommended")
-    new_token = q_secret("Access token (blank = keep existing)", style=_STYLE).ask()
-    if new_token:
-        _ensure_master_key()
-        _sv(toml_data, ["whatsapp", "access_token"], encrypt_string(new_token))
-        toml_dirty = True
-        ok("Access token saved (encrypted in config.toml)")
+    while True:
+        wa_enabled = _gv(toml_data, ["whatsapp", "enabled"], "false").lower()
+        wa_jid     = _gv(toml_data, ["whatsapp", "jid"], "")
+        push_name  = _gv(toml_data, ["whatsapp", "push_name"], "Sarthak")
+        proxy      = _gv(toml_data, ["whatsapp", "proxy"], "")
+        groups     = _gv(toml_data, ["whatsapp", "allow_groups"], "false")
+        presence   = _gv(toml_data, ["whatsapp", "send_presence"], "false")
 
-    # Webhook verify token
-    cur_verify = _gv(toml_data, ["whatsapp", "verify_token"], "")
-    dim("Any secret string you choose — paste the same value in Meta's webhook config")
-    new_verify = q_secret("Webhook verify token (blank = keep existing)", style=_STYLE).ask()
-    if new_verify and new_verify != cur_verify:
-        _ensure_master_key()
-        _sv(toml_data, ["whatsapp", "verify_token"], encrypt_string(new_verify))
-        toml_dirty = True
-        ok("Verify token saved (encrypted in config.toml)")
+        status_line = (
+            f"{'on' if wa_enabled == 'true' else 'off'}"
+            f", jid: {wa_jid or '(not paired)'}"
+            f", name: {push_name}"
+            + (f", proxy: {proxy[:20]}" if proxy else "")
+            + (f", groups: on" if groups not in ("false", "0", "") else "")
+            + (f", presence: on" if presence not in ("false", "0", "") else "")
+        )
 
-    # Allowed phone (E.164 format)
-    cur_phone = _gv(toml_data, ["whatsapp", "allowed_phone"], "")
-    dim("Your WhatsApp number in E.164 format, e.g. +919876543210")
-    new_phone = q_text("Allowed phone number", default=cur_phone, style=_STYLE).ask()
-    if new_phone and new_phone != cur_phone:
-        _sv(toml_data, ["whatsapp", "allowed_phone"], new_phone)
-        toml_dirty = True
+        hdr("WhatsApp — neonize")
+        dim(status_line)
+        click.echo("")
 
-    # HTTP timeout
-    cur_timeout = _gv(toml_data, ["whatsapp", "timeout_seconds"], "30")
-    new_timeout = q_text("HTTP timeout (seconds)", default=cur_timeout, style=_STYLE).ask()
-    if new_timeout and new_timeout != cur_timeout:
-        _sv(toml_data, ["whatsapp", "timeout_seconds"], new_timeout)
-        toml_dirty = True
+        choices = [
+            questionary.Choice(
+                f"  {'Re-scan QR' if wa_jid else 'Scan QR to pair'}  "
+                f"{'— already paired, re-pair?' if wa_jid else '— connect your WhatsApp account'}",
+                value="scan",
+            ),
+            questionary.Choice(
+                f"  {'Disable' if wa_enabled == 'true' else 'Enable'} bot",
+                value="toggle",
+            ),
+            questionary.Choice("  Settings  — push name, proxy, presence, groups…", value="settings"),
+            questionary.Choice("  Logout    — disconnect and delete session",        value="logout"),
+            questionary.Separator(),
+            questionary.Choice("  <- Back", value="__back__"),
+        ]
 
-    if toml_dirty or secrets_dirty:
-        _sv(toml_data, ["whatsapp", "mode"], "meta")
-        ok("WhatsApp channel configured")
-        info("Register webhook URL in Meta dashboard: POST /webhook/whatsapp")
-        info("Meta verification: GET  /webhook/whatsapp  (uses verify_token above)")
+        action = q_select("Action", choices=choices, style=_STYLE, pointer=_POINTER).ask()
+        if action in (None, "__back__"):
+            break
+
+        if action == "scan":
+            toml_dirty |= _configure_whatsapp_qr(toml_data)
+
+        elif action == "toggle":
+            new_state = not (wa_enabled == "true")
+            _sv(toml_data, ["whatsapp", "enabled"], new_state)
+            ok(f"WhatsApp {'enabled' if new_state else 'disabled'}")
+            toml_dirty = True
+
+        elif action == "settings":
+            toml_dirty |= _section_whatsapp_settings(toml_data)
+
+        elif action == "logout":
+            confirmed = q_confirm(
+                "Stop bot and delete session? You will need to re-scan QR to reconnect.",
+                default=False,
+                style=_STYLE,
+            ).ask()
+            if confirmed:
+                # Clear config fields
+                _sv(toml_data, ["whatsapp", "jid"],     "")
+                _sv(toml_data, ["whatsapp", "enabled"], False)
+                toml_dirty = True
+                # Delete session DB on disk
+                try:
+                    from sarthak.features.channels.whatsapp import SESSION_DB
+                    if SESSION_DB.exists():
+                        SESSION_DB.unlink()
+                        ok("Session DB deleted")
+                except Exception as exc:
+                    warn(f"Could not delete session DB: {exc}")
+                ok("Logged out — restart orchestrator to stop the bot process")
 
     return toml_dirty, secrets_dirty
 
@@ -1017,15 +1088,9 @@ def _section_channels(toml_data: dict, secrets_data: dict) -> tuple[bool, bool]:
         tg_status  = f"{'on' if tg_enabled == 'true' else 'off'}, user: {tg_allowed or '-'}, token: {'set' if tg_token else 'unset'}"
 
         # WhatsApp status
-        wa_enabled  = _gv(toml_data, ["whatsapp", "enabled"], "false").lower()
-        wa_mode     = _gv(toml_data, ["whatsapp", "mode"], "meta")
-        wa_phone_id = _gv(toml_data, ["whatsapp", "phone_number_id"], "")
-        wa_token    = _gv(toml_data, ["whatsapp", "access_token"], "")
-        wa_jid      = _gv(toml_data, ["whatsapp", "jid"], "")
-        if wa_mode == "qr":
-            wa_status = f"{'on' if wa_enabled == 'true' else 'off'}, mode: qr, jid: {wa_jid or 'unset'}"
-        else:
-            wa_status = f"{'on' if wa_enabled == 'true' else 'off'}, mode: meta, phone_id: {'set' if wa_phone_id else 'unset'}, token: {'set' if wa_token else 'unset'}"
+        wa_enabled = _gv(toml_data, ["whatsapp", "enabled"], "false").lower()
+        wa_jid     = _gv(toml_data, ["whatsapp", "jid"], "")
+        wa_status  = f"{'on' if wa_enabled == 'true' else 'off'}, jid: {wa_jid or 'unset (scan QR to pair)'}"
 
         choices = [
             questionary.Choice(f"  Telegram     [{tg_status}]",  value="telegram"),
