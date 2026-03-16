@@ -1,16 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { fmtDur } from '../utils/format';
 import SpaceCard from '../components/SpaceCard';
 import { useStore } from '../store';
 import useFetch from '../hooks/useFetch';
 import { StatCard, XPBar, ConceptPills, Spinner, Section, AgentPill } from '../components/ui';
 
 export default function Dashboard() {
-  const [hours, setHours] = useState(8);
   const [selected, setSelected] = useState(null);
 
-  const { data, loading: loadingData, reload: reloadData }           = useFetch(`/dashboard?hours=${hours}`, [hours], { initialData: null });
+  const { data, loading: loadingData, reload: reloadData }           = useFetch(`/dashboard`, [], { initialData: null });
   const { data: spaces = [], loading: loadingSpaces, reload: reloadSpaces } = useFetch('/spaces', [], { initialData: [] });
   const { data: agents = [], loading: loadingAgents, reload: reloadAgents } = useFetch('/agents', [], { initialData: [] });
   const { data: profilesList = [], reload: reloadProfiles }           = useFetch('/spaces/profiles', [], { initialData: [] });
@@ -30,13 +28,6 @@ export default function Dashboard() {
           <p className="pg-sub">{spaces.length} space{spaces.length !== 1 ? 's' : ''} · learning overview</p>
         </div>
         <div className="pg-actions">
-          <select className="s-select" style={{ width: 130 }} value={hours} onChange={e => setHours(+e.target.value)}>
-            <option value={3}>Last 3h</option>
-            <option value={8}>Last 8h</option>
-            <option value={24}>Last 24h</option>
-            <option value={72}>Last 3 days</option>
-            <option value={168}>Last week</option>
-          </select>
           <button className="btn btn-muted btn-sm" onClick={refresh}>Refresh</button>
         </div>
       </header>
@@ -46,7 +37,6 @@ export default function Dashboard() {
             ? <ActiveSpaceHero space={data.active_space} profile={profiles[data.active_space.name]} />
             : spaces.length > 0 ? <NoActiveSpaceBanner /> : null}
           {!loadingSpaces && <SpacesGrid spaces={spaces} profiles={profiles} onSelect={setSelected} />}
-          <ActivitySection data={data} hours={hours} />
           {!loadingAgents && <AgentsStrip agents={agents} />}
         </div>
       </div>
@@ -234,97 +224,6 @@ function MetaField({ label, value }) {
     <div className="meta-field">
       <div className="meta-label">{label}</div>
       <div className="meta-value">{value}</div>
-    </div>
-  );
-}
-
-// ── Activity Section ──────────────────────────────────────────────────────────
-function ActivitySection({ data: d, hours }) {
-  if (!d) return null;
-
-  const awHint = !d.aw_available
-    ? <span className="txt-muted-xs">ActivityWatch not running — start <code className="code-inline">aw-server</code></span>
-    : null;
-  const afkBadge = d.is_afk ? <span className="txt-amber-xs">AFK</span> : null;
-
-  return (
-    <Section title="Learning Activity" right={<>{awHint}{afkBadge}</>}>
-      <div className="activity-body">
-        <div className="stats-grid-auto">
-          {[{ label: 'Tracked',       val: d.total_minutes    ? fmtDur(d.total_minutes)    : '—' },
-            { label: 'Focus time',    val: d.focus_minutes    ? fmtDur(d.focus_minutes)    : '—' },
-            { label: 'Learning time', val: d.learning_minutes ? fmtDur(d.learning_minutes) : '—' },
-            { label: 'Focus score',   val: d.aw_available     ? `${d.focus_score ?? 0}%`   : '—' },
-          ].map(s => <StatCard key={s.label} val={s.val} lbl={s.label} />)}
-        </div>
-        {d.aw_available && d.focus_minutes > 0 && (
-          <FocusSplit learningMin={d.learning_minutes} focusMin={d.focus_minutes} totalMin={d.total_minutes} />
-        )}
-        {(d.top_apps || []).length > 0 && <AppTimeList apps={d.top_apps} hours={hours} />}
-      </div>
-    </Section>
-  );
-}
-
-function FocusSplit({ learningMin, focusMin, totalMin }) {
-  const segments = [
-    { label: 'Learning', min: learningMin,                          color: 'var(--accent)' },
-    { label: 'Other',    min: Math.max(0, focusMin - learningMin),  color: 'var(--accent-dim)' },
-    { label: 'Idle',     min: Math.max(0, totalMin - focusMin),     color: 'var(--brd2)' },
-  ].filter(s => s.min > 0);
-  const total = segments.reduce((s, x) => s + x.min, 0) || 1;
-  return (
-    <div className="focus-split">
-      <div className="focus-bar">
-        {segments.map(s => (
-          <div key={s.label} style={{ flex: s.min / total, background: s.color, minWidth: 2 }}
-            title={`${s.label}: ${fmtDur(s.min)}`} />
-        ))}
-      </div>
-      <div className="focus-legend">
-        {segments.map(s => (
-          <div key={s.label} className="focus-legend-item">
-            <div className="focus-legend-dot" style={{ background: s.color }} />
-            <span className="txt-sm">{s.label}</span>
-            <span className="txt-muted-sm">{fmtDur(s.min)}</span>
-            <span className="txt-xs">{Math.round(s.min / total * 100)}%</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AppTimeList({ apps, hours }) {
-  const [expanded, setExpanded] = useState(false);
-  const visible = expanded ? apps : apps.slice(0, 6);
-  const maxDur = Math.max(...apps.map(a => a.duration || 0), 1);
-  const totalSec = apps.reduce((s, a) => s + (a.duration || 0), 0);
-  return (
-    <div>
-      <div className="section-label">App time — last {hours}h</div>
-      <div className="app-list">
-        {visible.map((a, i) => {
-          const durMin = Math.round(a.duration / 60);
-          const pct    = Math.round((a.duration / maxDur) * 100);
-          const share  = totalSec > 0 ? Math.round(a.duration / totalSec * 100) : 0;
-          return (
-            <div key={i} className="app-bar-row">
-              <span className="app-bar-label" style={{ color: a.is_learning ? 'var(--accent)' : 'var(--txt2)' }}>{a.app}</span>
-              <div className="app-bar-track">
-                <div className="app-bar-fill" style={{ width: `${pct}%`, background: a.is_learning ? 'var(--accent)' : 'var(--accent-dim)' }} />
-              </div>
-              <span className="app-bar-val">{durMin > 0 ? fmtDur(durMin) : '<1m'}</span>
-              <span className="app-share">{share}%</span>
-            </div>
-          );
-        })}
-      </div>
-      {apps.length > 6 && (
-        <button className="tb-btn" style={{ marginTop: 8 }} onClick={() => setExpanded(v => !v)}>
-          {expanded ? 'Show less' : `+${apps.length - 6} more apps`}
-        </button>
-      )}
     </div>
   );
 }

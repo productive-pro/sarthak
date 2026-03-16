@@ -1,5 +1,5 @@
 """
-Vision agent — snapshot analysis with optional web search, shell, and ActivityWatch context.
+Vision agent — snapshot analysis with optional web search, shell.
 
 Specialist sub-agent called via delegation from the orchestrator.
 Uses duckduckgo_search_tool() as a built-in rather than manual httpx.
@@ -34,11 +34,5 @@ def build(provider: str, model_name: str) -> Agent[AgentDeps, SarthakResult]:
         if not ctx.deps.allow_shell:
             return "Shell access disabled by policy."
         return await shared_run_shell(command, ctx.deps.cwd, "vision")
-
-    @agent.tool
-    async def query_recent_events(ctx: RunContext[AgentDeps], days: int = 1) -> str:
-        """Query recent activity digest (stats + head/tail only — no raw rows)."""
-        from sarthak.features.ai.tools.activity import tool_query_activity
-        return await tool_query_activity(ctx.deps.pool, days=days)
 
     return agent

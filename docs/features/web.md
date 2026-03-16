@@ -16,8 +16,6 @@ Your **active Space** is shown as a hero card at the top — XP earned, current 
 
 Below that is a **grid of all your Spaces**. Each card shows a progress ring, XP, streak, and how many concepts you have mastered. Click any card to open a detailed profile for that Space.
 
-The **Learning Activity** section shows your tracked focus time for the period you select (last 3 hours, 8 hours, 24 hours, 3 days, or week). You can see total tracked time, focus time, how much was spent on learning-related apps, and a breakdown by application. This data is pulled from ActivityWatch running in the background — if it is not running, a notice will appear here.
-
 The **Agents** strip at the bottom shows your automation agents and whether each is currently active.
 
 ---

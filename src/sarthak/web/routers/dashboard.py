@@ -1,20 +1,11 @@
 """
 dashboard.py — Dashboard summary endpoint.
-
-ActivityWatch data is fetched via the shared httpx client managed
-by the app lifespan so no TCP connections are created per-request.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter
 
 router = APIRouter()
-
-_LEARNING_APPS = frozenset({
-    "code", "cursor", "nvim", "vim", "emacs", "terminal",
-    "python", "jupyter", "zed", "intellij", "pycharm",
-    "vscode", "obsidian", "notion", "logseq",
-})
 
 
 @router.get("/api/dashboard")
@@ -26,13 +17,6 @@ async def dashboard(hours: int = 24) -> dict:
         "active_space":    None,
         "spaces_count":    0,
         "spaces":          [],
-        "aw_available":    False,
-        "total_minutes":   0,
-        "focus_minutes":   0,
-        "learning_minutes": 0,
-        "focus_score":     0,
-        "top_apps":        [],
-        "is_afk":          False,
     }
 
     # ── Active space ──────────────────────────────────────────────────────────
@@ -86,83 +70,5 @@ async def dashboard(hours: int = 24) -> dict:
         ]
     except Exception:
         pass
-
-    # ── ActivityWatch ─────────────────────────────────────────────────────────
-    # Use the shared httpx client from the app lifespan (no per-request teardown).
-    try:
-        from datetime import datetime, timezone, timedelta
-        from sarthak.web.app import get_http_client
-
-        aw_base = "http://localhost:5600/api/0"
-        end     = datetime.now(timezone.utc)
-        start   = end - timedelta(hours=hours)
-        ts      = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        client  = get_http_client()
-
-        r_info = await client.get(f"{aw_base}/info", timeout=2.0)
-        r_info.raise_for_status()
-
-        r_buckets = await client.get(f"{aw_base}/buckets", timeout=2.0)
-        buckets = r_buckets.json() if r_buckets.is_success else {}
-
-        afk_bucket = next((b for b in buckets if "afkstatus" in b), None)
-        win_bucket = next((b for b in buckets if "window" in b and "afkstatus" not in b), None)
-
-        total_minutes = focus_minutes = learning_minutes = 0
-        top_apps: list[dict] = []
-        is_afk = False
-
-        if afk_bucket:
-            r_afk = await client.get(
-                f"{aw_base}/buckets/{afk_bucket}/events",
-                params={"start": ts(start), "end": ts(end), "limit": -1},
-                timeout=2.0,
-            )
-            if r_afk.is_success:
-                for ev in r_afk.json():
-                    dur = ev.get("duration", 0)
-                    total_minutes += dur / 60
-                    if ev.get("data", {}).get("status") == "not-afk":
-                        focus_minutes += dur / 60
-                afk_events = r_afk.json()
-                if afk_events:
-                    is_afk = afk_events[0].get("data", {}).get("status") == "afk"
-
-        if win_bucket:
-            r_win = await client.get(
-                f"{aw_base}/buckets/{win_bucket}/events",
-                params={"start": ts(start), "end": ts(end), "limit": -1},
-                timeout=2.0,
-            )
-            if r_win.is_success:
-                app_secs: dict[str, float] = {}
-                app_is_learning: dict[str, bool] = {}
-                for ev in r_win.json():
-                    dur     = ev.get("duration", 0)
-                    app     = ev.get("data", {}).get("app", "") or ""
-                    is_learn = any(la in app.lower() for la in _LEARNING_APPS)
-                    app_secs[app] = app_secs.get(app, 0) + dur
-                    app_is_learning[app] = is_learn
-                    if is_learn:
-                        learning_minutes += dur / 60
-                top_apps = sorted(
-                    [{"app": a, "duration": s, "is_learning": app_is_learning.get(a, False)}
-                     for a, s in app_secs.items()],
-                    key=lambda x: x["duration"],
-                    reverse=True,
-                )[:12]
-
-        focus_score = round(focus_minutes / max(total_minutes, 1) * 100) if total_minutes else 0
-        data.update({
-            "aw_available":    True,
-            "total_minutes":   round(total_minutes),
-            "focus_minutes":   round(focus_minutes),
-            "learning_minutes": round(learning_minutes),
-            "focus_score":     focus_score,
-            "top_apps":        top_apps,
-            "is_afk":          is_afk,
-        })
-    except Exception:
-        pass  # AW not running — silently skip
 
     return data

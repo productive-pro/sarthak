@@ -4,7 +4,6 @@
 
 - Python 3.11 or higher
 - An AI provider — Ollama (local and free), or a cloud provider like OpenAI or Anthropic
-- ActivityWatch — optional but recommended for focus tracking
 
 ## Install on Linux or macOS
 

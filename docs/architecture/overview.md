@@ -75,10 +75,6 @@ cache = get_cache()                    # Redis or LRU, transparent fallback
 
 Backend is set in `config.toml → [storage]`. Migrate between backends with `sarthak storage migrate`.
 
-## ActivityWatch integration
-
-ActivityWatch is the sole source of app-time data. The bridge in `spaces/activity_bridge.py` translates AW bucket events into `ActivityContext` objects. This context is a low-weight supplementary signal in curriculum planning. High-quality signals come from self-reports and practice test results.
-
 ## Spaces architecture
 
 ### SpacesOrchestrator
@@ -158,21 +154,6 @@ Every run passes through `agents/sandbox/`, which enforces tool gating, path gua
 ## AI layer
 
 All agents use Pydantic AI with a 3-tier `FallbackModel` chain built from `config.toml`. Provider configuration lives in `core/ai_utils/`. If the primary model fails, Sarthak retries with fallback1, then fallback2 — agents never crash on transient provider errors.
-
-## Data flow (activity intelligence)
-
-```
-ActivityWatch (app focus events)
-  └── activity_bridge.py
-        └── ActivityContext
-              └── CurriculumAgent / SummaryAgent / SignalOptimizer
-```
-
-```
-Capture daemon (window, terminal, snapshot)
-  └── storage/write.py → ~/.sarthak_ai/sarthak.db
-        └── analytics/ → TUI / Web UI / MCP
-```
 
 ## Extension points
 

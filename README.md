@@ -123,7 +123,6 @@ Users define agents in plain English. `creator.py` parses the description via LL
 
 - Python 3.11 or higher
 - An AI provider: [Ollama](https://ollama.com) (local, free) **or** a cloud provider API key
-- ActivityWatch (optional, for focus tracking)
 
 ### One-line install — Linux / macOS
 
@@ -395,7 +394,6 @@ This fetches live model lists from OpenRouter, OpenAI, Ollama, and GitHub Copilo
 - **Plugin system** — allow community-built specialist sub-agents and tools
 - **Offline-first sync** — conflict-free replicated data for multi-device use without a server
 - **Exam-mode assessments** — timed full-length mock exams with automated rubric grading
-- **ActivityWatch deep integration** — richer activity signals for curriculum adaptation
 - **More domain templates** — Law, Finance, Language Learning, Music
 
 ---
