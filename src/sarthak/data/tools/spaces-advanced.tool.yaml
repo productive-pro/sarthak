@@ -1,0 +1,9 @@
+id: spaces_context_hierarchical
+description: Get active space context with hierarchical loading — HEARTBEAT only when needed
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_context_hierarchical
+---
+id: spaces_session_isolated
+description: Run a learning session in an isolated context, returns compact summary only
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_session_isolated

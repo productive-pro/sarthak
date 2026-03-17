@@ -1,0 +1,4 @@
+id: run_shell
+description: Run a safe read-only shell command
+module: sarthak.features.ai.tools.shell
+function: tool_run_shell

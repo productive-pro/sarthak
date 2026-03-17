@@ -10,7 +10,7 @@ Quick start:
     result = await orch.next_session()
     print(result.reply)
 """
-from sarthak.spaces.domains import (
+from sarthak.spaces.domain_loader import (
     get_available_projects,
     get_domain,
     get_next_concepts,

@@ -1,0 +1,50 @@
+# Domain: Educational Technology & Learning Science
+
+concept_tree:
+  novice:
+    - "Learning science: spaced repetition, active recall, interleaving"
+    - "Bloom's taxonomy: from remembering to creating"
+    - "Formative vs summative assessment design"
+    - "Python basics: building a simple quiz from scratch"
+  beginner:
+    - "Knowledge tracing basics: Bayesian Knowledge Tracing (BKT)"
+    - "Learning analytics: engagement, dropout, and time-on-task metrics"
+    - "Instructional design: objectives → activities → assessment alignment"
+    - "AI APIs for automated content and question generation"
+  intermediate:
+    - "Bayesian Knowledge Tracing: implement BKT with PyTorch"
+    - "Recommendation systems for personalized learning paths"
+    - "NLP for automated grading and diagnostic feedback"
+    - "A/B testing educational interventions: power analysis, effect size"
+  advanced:
+    - "Intelligent tutoring systems: architecture and evaluation"
+    - "LLM-powered Socratic tutoring agents"
+    - "Multimodal learning: video + text + quiz pipelines"
+  expert:
+    - "Production LMS architecture: scalability and data privacy"
+    - "Educational data mining: research methods and publication"
+    - "Measuring causal impact: regression discontinuity, difference-in-differences"
+
+tools:
+  - name: gradio
+    purpose: "Interactive AI demos for students"
+    install_linux: "uv add gradio"
+    category: core
+  - name: streamlit
+    purpose: "Rapid web apps for education"
+    install_linux: "uv add streamlit"
+    category: core
+  - name: pandas
+    purpose: "Data analysis"
+    install_linux: "uv add pandas"
+    category: core
+  - name: matplotlib
+    purpose: "Visualization"
+    install_linux: "uv add matplotlib"
+    category: core
+  - name: jupyter
+    purpose: "Interactive notebooks"
+    install_linux: "uv add jupyter"
+    category: core
+
+projects: []

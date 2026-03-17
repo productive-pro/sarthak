@@ -1,0 +1,847 @@
+# Sarthak Workspace Templates
+# Defines the expert directory structure, README files, and starter files
+# created when a Space is initialized.
+#
+# Structure per space_type:
+#   directories:  list of relative paths to create (parents auto-created)
+#   readme_files: map of relative path → markdown content
+#   starter_files: map of relative path → file content
+#   progress_md:  content for .spaces/progress.md (the mastery roadmap tracker)
+#
+# Rules:
+#   - Non-destructive: existing files are never overwritten (except progress.md which is idempotent)
+#   - All paths are relative to the workspace root
+#   - .gitkeep is written to every created empty directory automatically by the loader
+#   - Shared sections (shared_readme, shared_starters) are merged before domain-specific ones
+#
+# To add a new domain template: add a new top-level key matching the SpaceType enum value.
+
+# ── Shared defaults (merged into every template) ──────────────────────────────
+shared:
+  directories:
+    - .spaces/tasks
+    - notes
+
+  readme_files:
+    ".spaces/README.md": |
+      # Sarthak Spaces
+
+      Learning state managed by Sarthak AI. Do not delete.
+
+      | File / Dir | Purpose |
+      |---|---|
+      | `sarthak.db` | Roadmap, SRS cards, notes (SQLite) |
+      | `rag/` | Vector search index |
+      | `tasks/` | Current and past learning tasks |
+      | `progress.md` | Mastery tracker (auto-updated) |
+      | `SOUL.md` | Agent identity for this space |
+      | `MEMORY.md` | Long-term learner patterns |
+      | `HEARTBEAT.md` | SRS due cards + streak |
+
+  starter_files: {}
+
+# ── Data Science & AI Engineering ─────────────────────────────────────────────
+data_science:
+  directories:
+    - notebooks/exploration
+    - notebooks/tutorials
+    - experiments
+    - projects
+    - src
+    - data/raw
+    - data/processed
+    - data/external
+    - models
+    - reports/figures
+    - scripts
+    - .spaces/tasks
+
+  readme_files:
+    "notebooks/README.md": |
+      # Notebooks
+
+      ## `exploration/` — Messy, disposable analysis. Move insights to `src/` when they solidify.
+      ## `tutorials/` — One notebook per concept. Your personal textbook.
+
+      > **Expert tip**: Use `marimo` for production notebooks — pure Python, git-diffs that make sense.
+      > Keep Jupyter for exploration only.
+
+      ```bash
+      # Start marimo
+      marimo edit notebooks/tutorials/your_notebook.py
+      ```
+
+    "experiments/README.md": |
+      # Experiments
+
+      Every ML experiment gets a folder: `YYYY-MM-DD_concept_variant/`
+
+      Track everything with **MLflow**:
+
+      ```python
+      import mlflow
+      mlflow.set_experiment('gradient_descent')
+      with mlflow.start_run():
+          mlflow.log_param('lr', 0.01)
+          mlflow.log_metric('val_loss', 0.23)
+          mlflow.log_artifact('reports/figures/loss_curve.png')
+      ```
+
+      > Never run an experiment without logging it. Future-you will thank you.
+
+    "src/README.md": |
+      # Source Code
+
+      Production-quality Python only. Extracted from notebooks when concepts solidify.
+
+      ```
+      src/
+        data/       # data loading & preprocessing
+        features/   # feature engineering
+        models/     # model definitions & training
+        evaluate/   # metrics, visualizations, reports
+      ```
+
+      > Expert rule: If you use it twice, it goes in `src/`.
+
+    "data/README.md": |
+      # Data
+
+      - `raw/`        → **Never modify.** Original source data, immutable.
+      - `processed/`  → Cleaned, transformed, ready for modeling.
+      - `external/`   → Third-party reference datasets.
+
+      > **Expert tip**: Use DuckDB to query without loading into memory:
+      > ```python
+      > import duckdb
+      > duckdb.sql("SELECT * FROM 'data/raw/file.csv' LIMIT 5").df()
+      > ```
+
+    "models/README.md": |
+      # Models
+
+      Saved artifacts, weights, and metadata.
+
+      Naming: `model_name_v1_YYYY-MM-DD.pkl`
+
+      Always save metadata alongside the model:
+      ```python
+      import joblib, json
+      joblib.dump(model, 'models/lr_v1.pkl')
+      json.dump({'features': list(X.columns), 'val_score': 0.89},
+                open('models/lr_v1_meta.json', 'w'))
+      ```
+
+    "reports/README.md": |
+      # Reports
+
+      Final analyses, presentations, and publication-ready figures.
+
+      > Always save figures programmatically — never screenshot:
+      > ```python
+      > plt.savefig('reports/figures/loss_curve.png', dpi=150, bbox_inches='tight')
+      > ```
+
+    "projects/README.md": |
+      # Projects
+
+      Real end-to-end projects. Each subfolder is a complete, shareable project.
+
+      This is your portfolio. Every project you complete goes here.
+
+      > Expert insight: Projects teach 10x more than isolated exercises.
+      > They force you to integrate concepts, debug real issues, and make decisions.
+
+  starter_files:
+    "pyproject.toml": |
+      [project]
+      name = "ai-ds-workspace"
+      version = "0.1.0"
+      requires-python = ">=3.11"
+      dependencies = [
+          "numpy", "pandas", "polars",
+          "scikit-learn", "matplotlib", "seaborn",
+          "jupyter", "duckdb", "mlflow", "rich",
+      ]
+
+      [tool.ruff]
+      line-length = 100
+
+      [tool.ruff.lint]
+      select = ["E", "F", "I"]
+
+    ".editorconfig": |
+      root = true
+
+      [*.py]
+      indent_style = space
+      indent_size = 4
+      end_of_line = lf
+      charset = utf-8
+      trim_trailing_whitespace = true
+      insert_final_newline = true
+
+    "scripts/setup_env.sh": |
+      #!/usr/bin/env bash
+      # Setup your expert DS/AI environment
+      set -e
+
+      echo '🚀 Setting up Sarthak AI/DS workspace...'
+
+      command -v uv >/dev/null 2>&1 || \
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      uv sync
+      uv add polars duckdb marimo mlflow rich
+      uv add --dev ruff pytest hypothesis
+
+      echo '✅ Expert environment ready!'
+      echo 'Run: marimo edit notebooks/tutorials/start_here.py'
+
+    "scripts/setup_env.ps1": |
+      # Setup your expert DS/AI environment on Windows
+      Write-Host '🚀 Setting up Sarthak AI/DS workspace...'
+
+      if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+          irm https://astral.sh/uv/install.ps1 | iex
+      }
+
+      uv sync
+      uv add polars duckdb marimo mlflow rich
+      uv add --dev ruff pytest hypothesis
+
+      Write-Host '✅ Expert environment ready!'
+
+    ".gitignore": |
+      # Python
+      __pycache__/
+      *.pyc
+      *.pyo
+      .venv/
+      dist/
+      build/
+      *.egg-info/
+
+      # Data (track with DVC instead)
+      data/raw/
+      data/processed/
+      models/*.pkl
+      models/*.pt
+
+      # Jupyter
+      .ipynb_checkpoints/
+
+      # MLflow
+      mlruns/
+
+      # Environment
+      .env
+      *.env
+
+  progress_md: |
+    # Mastery Roadmap
+
+    Auto-updated by Sarthak after each session.
+
+    ## 🔵 Foundation
+    - [ ] Python basics
+    - [ ] NumPy
+    - [ ] Pandas
+    - [ ] Statistics
+
+    ## 🟡 Core ML
+    - [ ] Linear regression (derive)
+    - [ ] Gradient descent (implement)
+    - [ ] scikit-learn pipelines
+
+    ## 🟠 Deep Learning
+    - [ ] Neural networks from scratch
+    - [ ] Backpropagation
+    - [ ] PyTorch
+
+    ## 🔴 Advanced
+    - [ ] Transformers
+    - [ ] MLOps
+    - [ ] Production deployment
+
+    ## 🏆 Expert
+    - [ ] Research replication
+    - [ ] Custom architectures
+
+# AI Engineering shares the same template as Data Science
+ai_engineering:
+  extends: data_science
+
+# ── Exam Prep ─────────────────────────────────────────────────────────────────
+exam_prep:
+  directories:
+    - subjects
+    - flashcards
+    - mock_tests
+    - weak_areas
+    - notes
+    - previous_years
+    - .spaces/tasks
+
+  readme_files:
+    "subjects/README.md": |
+      # Subjects
+
+      One folder per subject. Organize by chapter inside each subject folder.
+
+      Name chapters: `01_topic_name/`, `02_topic_name/` for ordered study.
+
+    "flashcards/README.md": |
+      # Flashcards
+
+      Use **Anki** for spaced repetition — the most evidence-backed memorization tool.
+
+      Export your deck after each study session.
+
+      > Research shows: spaced repetition beats re-reading by 200–400%.
+
+    "mock_tests/README.md": |
+      # Mock Tests
+
+      Rules for effective mock testing:
+      1. Full length, timed, no interruptions.
+      2. Immediately analyse every wrong answer.
+      3. Log error type: conceptual / careless / time-pressure.
+      4. Only errors in `weak_areas/` get re-studied.
+
+    "weak_areas/README.md": |
+      # Weak Areas
+
+      Track your error patterns here. Fix the root cause, not the symptom.
+
+      Template per entry:
+      `topic | error_type | fix | date_resolved`
+
+    "previous_years/README.md": |
+      # Previous Year Papers
+
+      Solve under timed, exam conditions — not as casual reading.
+
+      After each paper: log score, time taken, and top-3 weak areas.
+
+  starter_files:
+    "notes/template.md": |
+      # Topic: [Name]
+
+      ## Core Concept
+
+      ## Key Formulas
+
+      ## Common Mistakes
+
+      ## Practice Questions
+
+      ## Connections to Other Topics
+
+  progress_md: |
+    # Exam Prep Roadmap
+
+    ## Phase 1: Foundation
+    - [ ] Understand exam pattern
+    - [ ] Build study schedule using spaced repetition
+
+    ## Phase 2: Core Subjects
+    - [ ] Subject-by-subject coverage (one chapter at a time)
+
+    ## Phase 3: Practice
+    - [ ] Previous year question pattern analysis
+    - [ ] Timed topic-wise tests
+
+    ## Phase 4: Weak Area Elimination
+    - [ ] Error log review
+    - [ ] Targeted drilling on weak areas
+
+    ## Phase 5: Peak Performance
+    - [ ] Full-length mock tests under exam conditions
+    - [ ] Speed + accuracy calibration
+
+# ── Medicine ──────────────────────────────────────────────────────────────────
+medicine:
+  directories:
+    - clinical_data
+    - notebooks/eda
+    - notebooks/modeling
+    - src
+    - reports
+    - literature
+    - .spaces/tasks
+
+  readme_files:
+    "clinical_data/README.md": |
+      # Clinical Data
+
+      ⚠️ **Data governance first**: Verify IRB approval and de-identification before any analysis.
+
+      Use MIMIC-III demo dataset for learning: https://physionet.org/content/mimic-demo/
+
+      De-identification standard: HIPAA Safe Harbor (18 identifiers removed).
+
+    "literature/README.md": |
+      # Literature
+
+      Track papers with a structured reading log:
+
+      | Paper | Year | Key Claim | Method | Gap | Relevance |
+      |-------|------|-----------|--------|-----|-----------|
+
+    "notebooks/README.md": |
+      # Notebooks
+
+      - `eda/`      — Exploratory data analysis on clinical datasets
+      - `modeling/` — Model development and validation notebooks
+
+      > Always document: dataset version, preprocessing steps, patient cohort definition.
+
+    "src/README.md": |
+      # Source Code
+
+      Production-quality clinical ML code.
+
+      Structure:
+      ```
+      src/
+        data/     # data loading and de-identification
+        features/ # clinical feature engineering
+        models/   # model training and validation
+        eval/     # metrics: AUC, calibration, fairness subgroups
+      ```
+
+  starter_files: {}
+
+  progress_md: |
+    # Medical AI Mastery Roadmap
+
+    ## Foundation
+    - [ ] Clinical data types and EHR structure
+    - [ ] Biostatistics: sensitivity, specificity, ROC curves
+    - [ ] Python for clinical data (MIMIC demo)
+
+    ## Core Skills
+    - [ ] Survival analysis (Kaplan-Meier)
+    - [ ] Clinical NLP (named entity recognition)
+    - [ ] Medical imaging preprocessing (DICOM)
+
+    ## Advanced
+    - [ ] CNN for X-ray classification
+    - [ ] Federated learning theory
+    - [ ] AI fairness and subgroup analysis
+
+    ## Expert
+    - [ ] Causal inference for clinical decisions
+    - [ ] FDA SaMD regulatory guidance
+    - [ ] Production clinical ML system
+
+# ── Software Engineering ───────────────────────────────────────────────────────
+software_engineering:
+  directories:
+    - src
+    - tests
+    - docs
+    - scripts
+    - infra
+    - notes
+    - .spaces/tasks
+
+  readme_files:
+    "src/README.md": |
+      # Source Code
+
+      Production-quality code. Follow the single-responsibility principle.
+
+      ```
+      src/
+        api/        # HTTP layer (routes, schemas, middleware)
+        core/       # Business logic — no I/O
+        infra/      # DB, cache, external services
+        workers/    # Background jobs
+      ```
+
+      > Expert rule: The `core/` layer must never import from `api/` or `infra/`.
+
+    "tests/README.md": |
+      # Tests
+
+      Test pyramid: many unit tests, fewer integration, few E2E.
+
+      ```bash
+      # Run all tests
+      pytest -x --tb=short
+
+      # Watch mode
+      pytest-watch
+      ```
+
+      > Aim: 80%+ coverage on `core/`. Zero tolerance for untested business logic.
+
+    "notes/README.md": |
+      # Architecture Notes
+
+      Record design decisions (ADRs) here.
+
+      Format: `YYYY-MM-DD_decision_title.md`
+
+      Each ADR: Context → Decision → Consequences.
+
+    "docs/README.md": |
+      # Documentation
+
+      - `api/`       — API reference (auto-generated)
+      - `guides/`    — How-to guides
+      - `adr/`       — Architecture decision records
+
+    "infra/README.md": |
+      # Infrastructure
+
+      Infrastructure-as-code: Docker, Kubernetes manifests, Terraform configs.
+
+      > Rule: Every service runs locally with `docker compose up`. No exceptions.
+
+  starter_files:
+    ".editorconfig": |
+      root = true
+
+      [*.py]
+      indent_style = space
+      indent_size = 4
+      charset = utf-8
+      insert_final_newline = true
+
+    ".gitignore": |
+      # Python
+      __pycache__/
+      *.pyc
+      .venv/
+      dist/
+      build/
+      *.egg-info/
+
+      # Env
+      .env
+      *.env
+
+      # IDE
+      .vscode/
+      .idea/
+
+  progress_md: |
+    # Software Engineering Mastery Roadmap
+
+    ## Foundation
+    - [ ] Git fundamentals (commit, branch, merge, rebase)
+    - [ ] Testing basics: unit tests with pytest
+    - [ ] REST APIs: HTTP verbs, status codes, JSON
+
+    ## Core
+    - [ ] Design patterns (Factory, Observer, Strategy)
+    - [ ] SQL: joins, indexes, EXPLAIN
+    - [ ] Docker + CI/CD pipeline
+
+    ## Intermediate
+    - [ ] System design: load balancing, caching, queues
+    - [ ] Async Python: asyncio, concurrency models
+    - [ ] Database internals: B-trees, WAL, MVCC
+
+    ## Advanced
+    - [ ] Distributed systems: Raft, CAP theorem
+    - [ ] Observability: tracing, structured logging, SLOs
+    - [ ] Performance engineering: profiling, CPython GIL
+
+    ## Expert
+    - [ ] Platform engineering: Kubernetes, GitOps
+    - [ ] Large-scale refactoring (100k+ line codebases)
+
+# ── Education ─────────────────────────────────────────────────────────────────
+education:
+  directories:
+    - curriculum
+    - lessons
+    - assessments
+    - resources
+    - learner_data
+    - notes
+    - .spaces/tasks
+
+  readme_files:
+    "curriculum/README.md": |
+      # Curriculum Design
+
+      Structure: learning objectives → activities → assessments.
+
+      Use Bloom's taxonomy levels:
+        Remember → Understand → Apply → Analyse → Evaluate → Create
+
+    "assessments/README.md": |
+      # Assessments
+
+      - Formative: low-stakes checks for understanding during learning
+      - Summative: end-of-unit evaluation
+
+      > Research: immediate feedback beats delayed by 3–5× for retention.
+
+    "learner_data/README.md": |
+      # Learner Data
+
+      Anonymized learner performance data for analysis.
+
+      ⚠️ Always anonymize before storing. No real names or IDs.
+
+    "lessons/README.md": |
+      # Lessons
+
+      One folder per lesson. Structure:
+      ```
+      lesson_01_topic/
+        README.md       — objectives and overview
+        content.md      — learning material
+        activity.md     — hands-on activity
+        assessment.md   — formative check
+      ```
+
+  starter_files: {}
+
+  progress_md: |
+    # Educational Technology Mastery Roadmap
+
+    ## Foundation
+    - [ ] Learning science: spaced repetition, active recall
+    - [ ] Bloom's taxonomy
+    - [ ] Formative vs summative assessment
+
+    ## Core
+    - [ ] Bayesian Knowledge Tracing
+    - [ ] Learning analytics: engagement metrics
+    - [ ] AI APIs for content generation
+
+    ## Intermediate
+    - [ ] Recommendation systems for learning paths
+    - [ ] NLP for automated grading
+    - [ ] A/B testing educational interventions
+
+    ## Advanced
+    - [ ] Intelligent tutoring systems
+    - [ ] LLM-powered Socratic tutoring
+    - [ ] Multimodal learning pipelines
+
+# ── Business ──────────────────────────────────────────────────────────────────
+business:
+  directories:
+    - analysis
+    - reports
+    - data
+    - presentations
+    - strategy
+    - notes
+    - .spaces/tasks
+
+  readme_files:
+    "analysis/README.md": |
+      # Analysis
+
+      One folder per analytical question.
+
+      Structure each analysis:
+        1. Question / hypothesis
+        2. Data sources
+        3. Method
+        4. Findings
+        5. Recommendation
+
+    "reports/README.md": |
+      # Reports
+
+      Audience-first. Lead with the insight, not the method.
+
+      > Rule: A board member should grasp the key finding in 30 seconds.
+
+    "data/README.md": |
+      # Data
+
+      Store raw business data here. Never modify raw files.
+
+      > Use DuckDB for fast in-place analytics:
+      > ```python
+      > import duckdb
+      > duckdb.sql("SELECT * FROM 'data/revenue.csv'").df()
+      > ```
+
+    "strategy/README.md": |
+      # Strategy
+
+      Long-form strategic documents, frameworks, and hypotheses.
+
+      Frameworks: JTBD, RICE scoring, North Star metric, metrics tree.
+
+  starter_files: {}
+
+  progress_md: |
+    # Business Analytics Mastery Roadmap
+
+    ## Foundation
+    - [ ] Business fundamentals: revenue, cost, profit
+    - [ ] Spreadsheet analysis for business data
+    - [ ] Basic statistics: averages, trends, forecasting
+
+    ## Core
+    - [ ] Financial statements: P&L, balance sheet
+    - [ ] SQL for cohort analysis and funnels
+    - [ ] Market sizing: TAM, SAM, SOM
+
+    ## Intermediate
+    - [ ] Product analytics: DAU/MAU, retention, churn
+    - [ ] A/B testing: statistical significance
+    - [ ] Metrics trees and OKRs
+
+    ## Advanced
+    - [ ] Causal inference for business decisions
+    - [ ] ML for business: LTV, demand forecasting
+    - [ ] Building internal data products
+
+# ── Research ──────────────────────────────────────────────────────────────────
+research:
+  directories:
+    - literature
+    - data/raw
+    - data/processed
+    - analysis
+    - writing
+    - figures
+    - notes
+    - .spaces/tasks
+
+  readme_files:
+    "literature/README.md": |
+      # Literature
+
+      Track papers with a structured reading log:
+
+      | Paper | Year | Key Claim | Method | Gap | Relevance |
+      |-------|------|-----------|--------|-----|-----------|
+
+    "data/README.md": |
+      # Data
+
+      - `raw/`       — Original, immutable. Never modify.
+      - `processed/` — Cleaned, transformed, analysis-ready.
+
+      > Version data with DVC: `dvc add data/raw/dataset.csv`
+
+    "writing/README.md": |
+      # Writing
+
+      Draft structure: Abstract → Introduction → Methods → Results → Discussion.
+
+      > Write the methods section first — it clarifies what data you actually need.
+
+    "figures/README.md": |
+      # Figures
+
+      Publication-quality figures. Always save programmatically:
+      ```python
+      plt.savefig('figures/fig1_results.pdf', dpi=300, bbox_inches='tight')
+      ```
+
+      Naming: `fig{N}_{description}.{pdf|png}`
+
+    "analysis/README.md": |
+      # Analysis
+
+      One script/notebook per research question.
+
+      Document: dataset version, random seed, environment snapshot.
+
+      > Reproducibility rule: `dvc repro` should regenerate every result from scratch.
+
+  starter_files: {}
+
+  progress_md: |
+    # Research Mastery Roadmap
+
+    ## Foundation
+    - [ ] Research methodology: hypothesis formation
+    - [ ] Literature review and citation management
+    - [ ] Python for data collection and cleaning
+
+    ## Core
+    - [ ] Statistical inference: hypothesis tests, confidence intervals
+    - [ ] Reproducible research: version control, environments
+    - [ ] Publication-quality data visualization
+
+    ## Intermediate
+    - [ ] Experiment design: power analysis, randomization
+    - [ ] Advanced statistics: mixed models, Bayesian methods
+    - [ ] Automated data pipelines
+
+    ## Advanced
+    - [ ] Meta-analysis and systematic review
+    - [ ] ML for research acceleration
+    - [ ] Open science: pre-registration, data sharing
+
+# ── Custom (generic fallback) ─────────────────────────────────────────────────
+custom:
+  directories:
+    - notes
+    - projects
+    - resources
+    - reflections
+    - .spaces/tasks
+
+  readme_files:
+    "notes/README.md": |
+      # Notes
+
+      Your personal knowledge base. One file per concept or topic.
+
+      Use consistent headers:
+      ## Overview
+      ## Key Points
+      ## Questions
+      ## Connections
+
+    "projects/README.md": |
+      # Projects
+
+      Hands-on work you build to apply what you learn.
+
+      Each project: clear goal, documented approach, reflection on what you learned.
+
+    "resources/README.md": |
+      # Resources
+
+      Reference materials, links, PDFs, and external content.
+
+      Organize by topic. Add a brief note on why each resource is useful.
+
+    "reflections/README.md": |
+      # Reflections
+
+      Journaling, self-assessment, and learning reflections.
+
+      Weekly template:
+      - What did I learn this week?
+      - What am I still confused about?
+      - What's my plan for next week?
+
+  starter_files: {}
+
+  progress_md: |
+    # Mastery Roadmap
+
+    Auto-updated by Sarthak after each session.
+
+    ## Getting Started
+    - [ ] Define your learning goals
+    - [ ] Map out what you want to learn
+
+    ## Building Foundation
+    - [ ] Core concepts
+
+    ## Going Deeper
+    - [ ] Advanced topics
+
+    ## Mastery
+    - [ ] Real-world application

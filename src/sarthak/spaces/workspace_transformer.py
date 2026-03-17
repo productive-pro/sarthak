@@ -1,431 +1,164 @@
 """
 Sarthak Spaces — WorkspaceTransformer.
 
-Applies expert workspace templates to an existing directory.
+Applies expert workspace templates loaded from data/workspace_templates.yaml.
 Non-destructive: never deletes, only adds.
-Cross-platform: generates both .sh (Linux/macOS) and .ps1 (Windows) scripts.
 Idempotent: safe to run multiple times.
+
+Template resolution order for any SpaceType:
+  1. shared   — base dirs / readme_files / starter_files merged into every template
+  2. domain   — domain-specific content (may use `extends` to inherit another domain)
+  3. extra_dirs — custom directories appended last (CUSTOM spaces from discover_custom_domain)
+
+New behaviours vs old hardcoded version:
+  - All template content lives in data/workspace_templates.yaml — no Python changes needed
+  - `extends` key: ai_engineering inherits data_science without duplication
+  - .gitkeep written to every created directory (git tracks empty dirs)
+  - progress.md content is domain-specific for all domains (not just DS + exam_prep)
+  - space_structure.md written at space root and .spaces/ for LLM context injection
+  - Per-folder README files generated for CUSTOM `extra_dirs` with generic content
+  - Lazy-loaded + cached — YAML is parsed once per process
 """
 from __future__ import annotations
 
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from sarthak.core.logging import get_logger
 from sarthak.spaces.models import SpaceType
 
 log = get_logger(__name__)
 
+# ── Template file location ─────────────────────────────────────────────────────
 
-# ── Template definitions ───────────────────────────────────────────────────────
+_PKG_ROOT = Path(__file__).parent          # src/sarthak/spaces/
+_TMPL_FILE = _PKG_ROOT.parent / "data" / "workspace_templates.yaml"  # src/sarthak/data/
 
-def _ds_ai_template() -> dict:
-    return {
-        "directories": [
-            "notebooks/exploration",
-            "notebooks/tutorials",
-            "experiments",
-            "projects",
-            "src",
-            "data/raw",
-            "data/processed",
-            "data/external",
-            "models",
-            "reports/figures",
-            "scripts",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "notebooks/README.md": (
-                "# Notebooks\n\n"
-                "## `exploration/` — Messy, disposable analysis. Move insights to `src/` when they solidify.\n"
-                "## `tutorials/` — One notebook per concept. Your personal textbook.\n\n"
-                "> **Expert tip**: Use `marimo` for production notebooks — pure Python, git-diffs that make sense.\n"
-                "> Keep Jupyter for exploration only.\n\n"
-                "```bash\n# Start marimo\nmarimo edit notebooks/tutorials/your_notebook.py\n```"
-            ),
-            "experiments/README.md": (
-                "# Experiments\n\n"
-                "Every ML experiment gets a folder: `YYYY-MM-DD_concept_variant/`\n\n"
-                "Track everything with **MLflow**:\n\n"
-                "```python\nimport mlflow\n"
-                "mlflow.set_experiment('gradient_descent')\n"
-                "with mlflow.start_run():\n"
-                "    mlflow.log_param('lr', 0.01)\n"
-                "    mlflow.log_metric('val_loss', 0.23)\n"
-                "    mlflow.log_artifact('reports/figures/loss_curve.png')\n```\n\n"
-                "> Never run an experiment without logging it. Future-you will thank you."
-            ),
-            "src/README.md": (
-                "# Source Code\n\n"
-                "Production-quality Python only. Extracted from notebooks when concepts solidify.\n\n"
-                "```\nsrc/\n"
-                "  data/       # data loading & preprocessing\n"
-                "  features/   # feature engineering\n"
-                "  models/     # model definitions & training\n"
-                "  evaluate/   # metrics, visualizations, reports\n```\n\n"
-                "> Expert rule: If you use it twice, it goes in `src/`."
-            ),
-            "data/README.md": (
-                "# Data\n\n"
-                "- `raw/`        → **Never modify.** Original source data, immutable.\n"
-                "- `processed/`  → Cleaned, transformed, ready for modeling.\n"
-                "- `external/`   → Third-party reference datasets.\n\n"
-                "> **Expert tip**: Use DuckDB to query without loading into memory:\n"
-                "> ```python\n> import duckdb\n"
-                "> duckdb.sql(\"SELECT * FROM 'data/raw/file.csv' LIMIT 5\").df()\n> ```"
-            ),
-            "models/README.md": (
-                "# Models\n\nSaved artifacts, weights, and metadata.\n\n"
-                "Naming: `model_name_v1_YYYY-MM-DD.pkl`\n\n"
-                "Always save metadata alongside the model:\n"
-                "```python\nimport joblib, json\n"
-                "joblib.dump(model, 'models/lr_v1.pkl')\n"
-                "json.dump({'features': list(X.columns), 'val_score': 0.89},\n"
-                "          open('models/lr_v1_meta.json', 'w'))\n```"
-            ),
-            "reports/README.md": (
-                "# Reports\n\nFinal analyses, presentations, and publication-ready figures.\n\n"
-                "> Always save figures programmatically — never screenshot:\n"
-                "> ```python\n> plt.savefig('reports/figures/loss_curve.png', dpi=150, bbox_inches='tight')\n> ```"
-            ),
-            "projects/README.md": (
-                "# Projects\n\n"
-                "Real end-to-end projects. Each subfolder is a complete, shareable project.\n\n"
-                "This is your portfolio. Every project you complete goes here.\n\n"
-                "> Expert insight: Projects teach 10x more than isolated exercises.\n"
-                "> They force you to integrate concepts, debug real issues, and make decisions."
-            ),
-            ".spaces/README.md": (
-                "# Sarthak Spaces\n\n"
-                "Learning state managed by Sarthak AI.\n\n"
-                "- `tasks/` — current and past learning tasks\n"
-                "- `progress.md` — your mastery roadmap\n\n"
-                "Do not delete. This is your learning history."
-            ),
-        },
-        "starter_files": {
-            "pyproject.toml": (
-                "[project]\n"
-                "name = \"ai-ds-workspace\"\n"
-                "version = \"0.1.0\"\n"
-                "requires-python = \">=3.11\"\n"
-                "dependencies = [\n"
-                "    \"numpy\", \"pandas\", \"polars\",\n"
-                "    \"scikit-learn\", \"matplotlib\", \"seaborn\",\n"
-                "    \"jupyter\", \"duckdb\", \"mlflow\", \"rich\",\n"
-                "]\n\n"
-                "[tool.ruff]\n"
-                "line-length = 100\n\n"
-                "[tool.ruff.lint]\n"
-                "select = [\"E\", \"F\", \"I\"]\n"
-            ),
-            ".editorconfig": (
-                "root = true\n\n"
-                "[*.py]\n"
-                "indent_style = space\n"
-                "indent_size = 4\n"
-                "end_of_line = lf\n"
-                "charset = utf-8\n"
-                "trim_trailing_whitespace = true\n"
-                "insert_final_newline = true\n"
-            ),
-            "scripts/setup_env.sh": (
-                "#!/usr/bin/env bash\n"
-                "# Setup your expert DS/AI environment\n"
-                "set -e\n\n"
-                "echo '🚀 Setting up Sarthak AI/DS workspace...'\n\n"
-                "# Install uv if not present\n"
-                "command -v uv >/dev/null 2>&1 || \\\n"
-                "    curl -LsSf https://astral.sh/uv/install.sh | sh\n\n"
-                "# Install core + expert tools\n"
-                "uv sync\n"
-                "uv add polars duckdb marimo mlflow rich\n"
-                "uv add --dev ruff pytest hypothesis\n\n"
-                "echo '✅ Expert environment ready!'\n"
-                "echo 'Run: marimo edit notebooks/tutorials/start_here.py'\n"
-            ),
-            "scripts/setup_env.ps1": (
-                "# Setup your expert DS/AI environment on Windows\n"
-                "Write-Host '🚀 Setting up Sarthak AI/DS workspace...'\n\n"
-                "# Install uv if not present\n"
-                "if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {\n"
-                "    irm https://astral.sh/uv/install.ps1 | iex\n"
-                "}\n\n"
-                "uv sync\n"
-                "uv add polars duckdb marimo mlflow rich\n"
-                "uv add --dev ruff pytest hypothesis\n\n"
-                "Write-Host '✅ Expert environment ready!'\n"
-            ),
-            ".gitignore": (
-                "# Python\n__pycache__/\n*.pyc\n*.pyo\n.venv/\ndist/\nbuild/\n*.egg-info/\n\n"
-                "# Data (track with DVC instead)\ndata/raw/\ndata/processed/\nmodels/*.pkl\nmodels/*.pt\n\n"
-                "# Jupyter\n.ipynb_checkpoints/\n\n"
-                "# MLflow\nmlruns/\n\n"
-                "# Environment\n.env\n*.env\n"
-            ),
-        },
-    }
+_cache_lock: threading.Lock = threading.Lock()
+_templates_cache: dict[str, Any] | None = None
 
 
-def _exam_template() -> dict:
-    return {
-        "directories": [
-            "subjects",
-            "flashcards",
-            "mock_tests",
-            "weak_areas",
-            "notes",
-            "previous_years",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "subjects/README.md": "# Subjects\nOne folder per subject. Organize by chapter.\n",
-            "flashcards/README.md": (
-                "# Flashcards\n\n"
-                "Use **Anki** for spaced repetition — the most evidence-backed memorization tool.\n\n"
-                "Export your deck after each study session.\n"
-                "> Research shows: spaced repetition beats re-reading by 200-400%."
-            ),
-            "mock_tests/README.md": (
-                "# Mock Tests\n\n"
-                "Rules for effective mock testing:\n"
-                "1. Full length, timed, no interruptions.\n"
-                "2. Immediately analyse every wrong answer.\n"
-                "3. Log error type: conceptual / careless / time-pressure.\n"
-                "4. Only errors in `weak_areas/` get re-studied."
-            ),
-            "weak_areas/README.md": (
-                "# Weak Areas\n\n"
-                "Track your error patterns here. Fix the root cause, not the symptom.\n\n"
-                "Template: `topic | error_type | fix | date_resolved`"
-            ),
-        },
-        "starter_files": {
-            "notes/template.md": (
-                "# Topic: [Name]\n\n"
-                "## Core Concept\n\n"
-                "## Key Formulas\n\n"
-                "## Common Mistakes\n\n"
-                "## Practice Questions\n\n"
-                "## Connections to Other Topics\n"
-            ),
-        },
-    }
+# ── YAML loader ───────────────────────────────────────────────────────────────
+
+def _load_raw() -> dict[str, Any]:
+    global _templates_cache
+    if _templates_cache is not None:
+        return _templates_cache
+    with _cache_lock:
+        if _templates_cache is not None:
+            return _templates_cache
+        if not _TMPL_FILE.exists():
+            raise FileNotFoundError(
+                f"workspace_templates.yaml not found: {_TMPL_FILE}\n"
+                f"Run 'sarthak space setup' to restore data files."
+            )
+        try:
+            data = yaml.safe_load(_TMPL_FILE.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            log.error("workspace_templates_parse_error", error=str(exc))
+            raise
+        _templates_cache = data
+        return data
 
 
-def _medicine_template() -> dict:
-    return {
-        "directories": [
-            "clinical_data",
-            "notebooks/eda",
-            "notebooks/modeling",
-            "src",
-            "reports",
-            "literature",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "clinical_data/README.md": (
-                "# Clinical Data\n\n"
-                "⚠️ **Data governance first**: Verify IRB approval and de-identification before any analysis.\n\n"
-                "Use MIMIC-III demo dataset for learning: https://physionet.org/content/mimic-demo/\n"
-            ),
-        },
+def _resolve_template(key: str, raw: dict, _stack: frozenset[str] | None = None) -> dict:
+    """
+    Resolve a template by key, merging shared + parent (via `extends`) + own.
+    Returns a flat dict: {directories, readme_files, starter_files, progress_md}
+    """
+    stack = _stack or frozenset()
+    own   = raw.get(key, {})
+
+    # Handle `extends` (e.g. ai_engineering extends data_science)
+    parent: dict = {}
+    parent_key = own.get("extends")
+    if parent_key and parent_key not in stack:
+        parent = _resolve_template(parent_key, raw, stack | {key})
+    elif parent_key:
+        log.warning("workspace_template_circular_extends", key=key, parent=parent_key)
+
+    shared = raw.get("shared", {})
+
+    # Merge: shared ← parent ← own  (later wins for scalar keys, dicts are merged)
+    result: dict = {
+        "directories":   [],
+        "readme_files":  {},
         "starter_files": {},
+        "progress_md":   "",
     }
 
+    for src in (shared, parent, own):
+        result["directories"]   = list(dict.fromkeys(
+            result["directories"] + list(src.get("directories", []))
+        ))
+        result["readme_files"]  = {**result["readme_files"],  **src.get("readme_files",  {})}
+        result["starter_files"] = {**result["starter_files"], **src.get("starter_files", {})}
+        if src.get("progress_md"):
+            result["progress_md"] = src["progress_md"]
 
-def _software_eng_template() -> dict:
-    return {
-        "directories": [
-            "src",
-            "tests",
-            "docs",
-            "scripts",
-            "infra",
-            "notes",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "src/README.md": (
-                "# Source Code\n\n"
-                "Production-quality code. Follow the single-responsibility principle.\n\n"
-                "```\nsrc/\n"
-                "  api/        # HTTP layer (routes, schemas, middleware)\n"
-                "  core/       # Business logic — no I/O\n"
-                "  infra/      # DB, cache, external services\n"
-                "  workers/    # Background jobs\n```\n\n"
-                "> Expert rule: The `core/` layer must never import from `api/` or `infra/`."
-            ),
-            "tests/README.md": (
-                "# Tests\n\n"
-                "Test pyramid: many unit tests, fewer integration, few E2E.\n\n"
-                "```bash\n# Run all tests\npytest -x --tb=short\n\n"
-                "# Watch mode\npytest-watch\n```\n\n"
-                "> Aim: 80%+ coverage on `core/`. Zero tolerance for untested business logic."
-            ),
-            "notes/README.md": (
-                "# Architecture Notes\n\n"
-                "Record design decisions (ADRs) here.\n\n"
-                "Format: `YYYY-MM-DD_decision_title.md`\n\n"
-                "Each ADR: Context → Decision → Consequences."
-            ),
-        },
-        "starter_files": {
-            ".editorconfig": (
-                "root = true\n\n"
-                "[*.py]\n"
-                "indent_style = space\n"
-                "indent_size = 4\n"
-                "charset = utf-8\n"
-                "insert_final_newline = true\n"
-            ),
-            ".gitignore": (
-                "# Python\n__pycache__/\n*.pyc\n.venv/\ndist/\nbuild/\n*.egg-info/\n\n"
-                "# Env\n.env\n*.env\n\n"
-                "# IDE\n.vscode/\n.idea/\n"
-            ),
-        },
-    }
+    return result
 
 
-def _education_template() -> dict:
-    return {
-        "directories": [
-            "curriculum",
-            "lessons",
-            "assessments",
-            "resources",
-            "learner_data",
-            "notes",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "curriculum/README.md": (
-                "# Curriculum Design\n\n"
-                "Structure: learning objectives → activities → assessments.\n\n"
-                "Use Bloom's taxonomy levels:\n"
-                "  Remember → Understand → Apply → Analyse → Evaluate → Create"
-            ),
-            "assessments/README.md": (
-                "# Assessments\n\n"
-                "- Formative: low-stakes checks for understanding during learning\n"
-                "- Summative: end-of-unit evaluation\n\n"
-                "> Research: immediate feedback beats delayed by 3-5x for retention."
-            ),
-        },
-        "starter_files": {},
-    }
+def _get_template(space_type: SpaceType) -> dict:
+    raw = _load_raw()
+    key = space_type.value  # e.g. "data_science"
+    if key not in raw:
+        log.warning("workspace_template_missing", space_type=key, fallback="custom")
+        key = "custom"
+    return _resolve_template(key, raw)
 
 
-def _business_template() -> dict:
-    return {
-        "directories": [
-            "analysis",
-            "reports",
-            "data",
-            "presentations",
-            "strategy",
-            "notes",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "analysis/README.md": (
-                "# Analysis\n\n"
-                "One folder per analytical question.\n\n"
-                "Structure each analysis:\n"
-                "  1. Question / hypothesis\n"
-                "  2. Data sources\n"
-                "  3. Method\n"
-                "  4. Findings\n"
-                "  5. Recommendation\n"
-            ),
-            "reports/README.md": (
-                "# Reports\n\n"
-                "Audience-first. Lead with the insight, not the method.\n\n"
-                "> Rule: A board member should grasp the key finding in 30 seconds."
-            ),
-        },
-        "starter_files": {},
-    }
+# ── Generic README for unknown custom dirs ─────────────────────────────────────
 
-
-def _research_template() -> dict:
-    return {
-        "directories": [
-            "literature",
-            "data/raw",
-            "data/processed",
-            "analysis",
-            "writing",
-            "figures",
-            "notes",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "literature/README.md": (
-                "# Literature\n\n"
-                "Track papers with a structured reading log:\n\n"
-                "| Paper | Year | Key Claim | Method | Gap | Relevance |\n"
-                "|-------|------|-----------|--------|-----|-----------|"
-            ),
-            "data/README.md": (
-                "# Data\n\n"
-                "- `raw/`       — Original, immutable. Never modify.\n"
-                "- `processed/` — Cleaned, transformed, analysis-ready.\n\n"
-                "> Version data with DVC: `dvc add data/raw/dataset.csv`"
-            ),
-            "writing/README.md": (
-                "# Writing\n\n"
-                "Draft structure: Abstract → Introduction → Methods → Results → Discussion.\n\n"
-                "> Write the methods section first — it clarifies what data you actually need."
-            ),
-        },
-        "starter_files": {},
-    }
-
-
-def _generic_template() -> dict:
-    return {
-        "directories": [
-            "notes",
-            "projects",
-            "resources",
-            "reflections",
-            ".spaces/tasks",
-        ],
-        "readme_files": {
-            "notes/README.md": (
-                "# Notes\n\n"
-                "Your personal knowledge base. One file per concept or topic.\n\n"
-                "Use consistent headers: ## Overview, ## Key Points, ## Questions, ## Connections"
-            ),
-        },
-        "starter_files": {},
-    }
-
-
-# ── Template registry ──────────────────────────────────────────────────────────
-
-TEMPLATES: dict[SpaceType, dict] = {
-    SpaceType.DATA_SCIENCE:   _ds_ai_template(),
-    SpaceType.AI_ENGINEERING: _ds_ai_template(),
-    SpaceType.EXAM_PREP:      _exam_template(),
-    SpaceType.MEDICINE:       _medicine_template(),
-    SpaceType.SOFTWARE_ENG:   _software_eng_template(),
-    SpaceType.EDUCATION:      _education_template(),
-    SpaceType.BUSINESS:       _business_template(),
-    SpaceType.RESEARCH:       _research_template(),
-    SpaceType.CUSTOM:         _generic_template(),
+_GENERIC_FOLDER_DESCS: dict[str, str] = {
+    "notes":        "Your personal notes — concept explanations, insights, summaries.",
+    "resources":    "Reference materials, PDFs, links, and external content.",
+    "projects":     "Hands-on projects you build to apply what you learn.",
+    "reflections":  "Journaling, self-assessment, and learning reflections.",
+    "data":         "Datasets and data files used in exercises.",
+    "notebooks":    "Interactive notebooks for exploration and tutorials.",
+    "src":          "Production-quality code extracted from notebooks.",
+    "experiments":  "Tracked experiments with results and metadata.",
+    "models":       "Saved model weights and metadata.",
+    "reports":      "Final analyses and publication-ready outputs.",
+    "flashcards":   "Spaced repetition flashcard decks.",
+    "mock_tests":   "Timed practice tests and results.",
+    "weak_areas":   "Error log and targeted drilling materials.",
+    "subjects":     "Subject-by-subject organized study materials.",
+    "literature":   "Research papers and reading log.",
+    "analysis":     "Analytical work and findings.",
+    "writing":      "Writing drafts and documents.",
+    "presentations":"Slides and presentation materials.",
+    "curriculum":   "Curriculum design documents.",
+    "lessons":      "Lesson materials and activities.",
+    "assessments":  "Assessment and quiz materials.",
 }
+
+def _auto_readme(folder: str) -> str:
+    """Generate a README for a custom folder with no explicit template entry."""
+    desc = _GENERIC_FOLDER_DESCS.get(folder, f"Files and materials related to {folder}.")
+    title = folder.replace("_", " ").title()
+    return f"# {title}\n\n{desc}\n"
 
 
 # ── WorkspaceTransformer ───────────────────────────────────────────────────────
 
 class WorkspaceTransformer:
     """
-    Applies the expert workspace template.
-    Safe to run multiple times — idempotent.
+    Applies the expert workspace template for a SpaceType.
+    Safe to run multiple times — fully idempotent.
+
+    What it does on transform():
+      1. Creates all template directories (mkdir -p, never removes)
+      2. Writes .gitkeep into each new empty directory so git tracks them
+      3. Writes README files (skips if file already exists)
+      4. Writes starter files (skips if file already exists)
+      5. Writes .spaces/progress.md (domain-specific roadmap tracker, skips if exists)
+      6. Writes space_structure.md at root and .spaces/ for LLM context injection
     """
 
     def __init__(self, workspace_dir: str | Path):
@@ -436,72 +169,173 @@ class WorkspaceTransformer:
         space_type: SpaceType = SpaceType.DATA_SCIENCE,
         extra_dirs: list[str] | None = None,
     ) -> list[str]:
-        """Apply expert workspace template. Returns list of created paths.
+        """
+        Apply expert workspace template. Returns list of created paths.
 
         extra_dirs: additional directories to create (used for CUSTOM spaces
-        where discover_custom_domain returns workspace_folders).
+        where discover_custom_domain() returns workspace_folders).
+        Each extra dir also gets an auto-generated README if not in template.
         """
-        template = TEMPLATES.get(space_type, _generic_template())
-        if extra_dirs:
-            template = dict(template)
-            template["directories"] = list(dict.fromkeys(
-                template.get("directories", []) + extra_dirs
-            ))
+        template = _get_template(space_type)
         created: list[str] = []
 
-        for d in template.get("directories", []):
+        # Merge in extra_dirs (deduplicated, preserving order)
+        all_dirs = list(dict.fromkeys(
+            template["directories"] + (extra_dirs or [])
+        ))
+
+        # 1. Create directories + .gitkeep
+        for d in all_dirs:
             target = self.workspace_dir / d
+            is_new = not target.exists()
             target.mkdir(parents=True, exist_ok=True)
-            created.append(str(target))
+            if is_new:
+                created.append(str(target))
+            # .gitkeep — only for leaf dirs that have no other files
+            gitkeep = target / ".gitkeep"
+            if not gitkeep.exists() and not any(
+                f for f in target.iterdir() if f.name != ".gitkeep"
+            ) if target.exists() else True:
+                gitkeep.touch()
 
-        for rel, content in template.get("readme_files", {}).items():
+        # 2. README files from template
+        readme_map: dict[str, str] = dict(template["readme_files"])
+
+        # Auto-generate README for extra_dirs that have no entry in the template
+        for d in (extra_dirs or []):
+            top_level = d.split("/")[0]
+            readme_key = f"{top_level}/README.md"
+            if readme_key not in readme_map:
+                readme_map[readme_key] = _auto_readme(top_level)
+
+        for rel, content in readme_map.items():
             target = self.workspace_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if not target.exists():
                 target.write_text(content, encoding="utf-8")
                 created.append(str(target))
 
-        for rel, content in template.get("starter_files", {}).items():
+        # 3. Starter files
+        for rel, content in template["starter_files"].items():
             target = self.workspace_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if not target.exists():
                 target.write_text(content, encoding="utf-8")
                 created.append(str(target))
 
-        self._write_progress_tracker(space_type)
+        # 4. Progress tracker (.spaces/progress.md) — idempotent
+        self._write_progress(template["progress_md"])
+
+        # 5. Directory structure doc (root + .spaces/) — always refresh
+        self._write_structure_doc(space_type, all_dirs, readme_map)
+
+        log.info(
+            "workspace_transformed",
+            space_type=space_type.value,
+            created=len(created),
+            workspace=str(self.workspace_dir),
+        )
         return created
 
-    def _write_progress_tracker(self, space_type: SpaceType) -> None:
+    # ── Private helpers ────────────────────────────────────────────────────────
+
+    def _write_progress(self, content: str) -> None:
+        """Write .spaces/progress.md if it doesn't exist yet."""
         progress = self.workspace_dir / ".spaces" / "progress.md"
         progress.parent.mkdir(parents=True, exist_ok=True)
-        if progress.exists():
-            return  # Don't overwrite progress
-
-        if space_type in (SpaceType.DATA_SCIENCE, SpaceType.AI_ENGINEERING):
-            content = (
-                "# Mastery Roadmap\n\n"
-                "Auto-updated by Sarthak after each session.\n\n"
-                "## 🔵 Foundation\n"
-                "- [ ] Python basics\n- [ ] NumPy\n- [ ] Pandas\n- [ ] Statistics\n\n"
-                "## 🟡 Core ML\n"
-                "- [ ] Linear regression (derive)\n- [ ] Gradient descent (implement)\n- [ ] scikit-learn pipelines\n\n"
-                "## 🟠 Deep Learning\n"
-                "- [ ] Neural networks from scratch\n- [ ] Backpropagation\n- [ ] PyTorch\n\n"
-                "## 🔴 Advanced\n"
-                "- [ ] Transformers\n- [ ] MLOps\n- [ ] Production deployment\n\n"
-                "## 🏆 Expert\n"
-                "- [ ] Research replication\n- [ ] Custom architectures\n"
+        if not progress.exists():
+            progress.write_text(
+                content or "# Mastery Roadmap\n\nAuto-updated by Sarthak after each session.\n",
+                encoding="utf-8",
             )
-        elif space_type == SpaceType.EXAM_PREP:
-            content = (
-                "# Exam Prep Roadmap\n\n"
-                "## Phase 1: Foundation\n- [ ] Understand exam pattern\n- [ ] Build study schedule\n\n"
-                "## Phase 2: Core Subjects\n- [ ] Subject-by-subject coverage\n\n"
-                "## Phase 3: Practice\n- [ ] Previous year questions\n- [ ] Mock tests\n\n"
-                "## Phase 4: Weak Area Elimination\n- [ ] Targeted drilling\n\n"
-                "## Phase 5: Peak Performance\n- [ ] Full-length tests under exam conditions\n"
-            )
-        else:
-            content = "# Mastery Roadmap\n\nAuto-updated by Sarthak after each session.\n"
 
-        progress.write_text(content, encoding="utf-8")
+    def _write_structure_doc(
+        self,
+        space_type: SpaceType,
+        all_dirs: list[str],
+        readme_map: dict[str, str],
+    ) -> None:
+        """
+        Write space_structure.md at workspace root and .spaces/directory_structure.md.
+        Replaces the old write_directory_structure() function in roadmap_init.py.
+        Always refreshed so it stays current with actual workspace contents.
+        """
+        domain_name = space_type.value.replace("_", " ").title()
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        lines = [
+            f"# Workspace Structure: {domain_name}",
+            f"*Generated: {date_str}*",
+            "",
+            "This file documents the purpose of each folder in your learning workspace.",
+            "Sarthak agents use `.spaces/directory_structure.md` for workspace context.",
+            "",
+            "## Directory Layout",
+            "",
+        ]
+
+        # Top-level dirs only (skip .spaces internals from this doc)
+        seen_tops: set[str] = set()
+        for d in all_dirs:
+            top = d.split("/")[0]
+            if top in seen_tops or top == ".spaces":
+                continue
+            seen_tops.add(top)
+            readme_key = f"{top}/README.md"
+            desc = ""
+            if readme_key in readme_map:
+                # First non-empty, non-heading line of the README
+                for ln in readme_map[readme_key].splitlines():
+                    ln = ln.strip()
+                    if ln and not ln.startswith("#"):
+                        desc = ln[:120]
+                        break
+            if not desc:
+                desc = _GENERIC_FOLDER_DESCS.get(top, f"Files and materials for {top}.")
+            lines.append(f"### `{top}/`")
+            lines.append(desc)
+            # List existing files (for already-populated spaces)
+            actual = self.workspace_dir / top
+            if actual.exists():
+                sub = sorted(
+                    f.name for f in actual.iterdir()
+                    if not f.name.startswith(".") and f.name != ".gitkeep"
+                )[:5]
+                if sub:
+                    lines.append(f"*Contains: {', '.join(sub)}*")
+            lines.append("")
+
+        lines += [
+            "## Sarthak State (`.spaces/`)",
+            "",
+            "| File | Purpose |",
+            "|------|---------|",
+            "| `sarthak.db` | Roadmap, notes, SRS cards (SQLite) |",
+            "| `rag/` | Vector search index |",
+            "| `tasks/` | Current and past learning tasks |",
+            "| `progress.md` | Mastery tracker (auto-updated) |",
+            "| `SOUL.md` | Agent identity for this space |",
+            "| `MEMORY.md` | Long-term learner patterns |",
+            "| `HEARTBEAT.md` | SRS due cards + streak |",
+            "| `directory_structure.md` | This file |",
+            "",
+        ]
+        content = "\n".join(lines)
+
+        # .spaces/ copy for LLM context injection
+        hidden = self.workspace_dir / ".spaces" / "directory_structure.md"
+        hidden.parent.mkdir(parents=True, exist_ok=True)
+        hidden.write_text(content, encoding="utf-8")
+
+        # Root copy for human visibility
+        root_doc = self.workspace_dir / "space_structure.md"
+        root_doc.write_text(content, encoding="utf-8")
+
+        log.debug("structure_doc_written", path=str(root_doc))
+
+
+def invalidate_template_cache() -> None:
+    """Clear the in-process template cache. Call after editing workspace_templates.yaml."""
+    global _templates_cache
+    with _cache_lock:
+        _templates_cache = None
+    log.info("workspace_template_cache_invalidated")

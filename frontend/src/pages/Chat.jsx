@@ -28,9 +28,86 @@ import { useSarthakRuntime } from '../hooks/useSarthakRuntime';
 import { api } from '../api';
 import { useStore } from '../store';
 
-const STORAGE_KEY = 'sarthak_chat_session_id';
-const loadStored = () => { try { return localStorage.getItem(STORAGE_KEY) || null; } catch { return null; } };
-const saveStored = (sid) => { try { sid ? localStorage.setItem(STORAGE_KEY, sid) : localStorage.removeItem(STORAGE_KEY); } catch {} };
+// ── AG-UI learner state defaults ──────────────────────────────────────────────
+const DEFAULT_AGUI_STATE = {
+  xp: 0, streak: 0, level: '', concept: '', space_dir: '', session_count: 0, badges: [],
+};
+
+// ── Live learner state bar (AG-UI mode only) ──────────────────────────────────
+function LearnerStateBar({ state, onSetSpaceDir }) {
+  const [editing, setEditing] = useState(false);
+  const [input,   setInput]   = useState(state.space_dir || '');
+
+  const commit = () => { onSetSpaceDir(input.trim()); setEditing(false); };
+
+  return (
+    <div className="agui-state-bar">
+      {/* XP pill */}
+      <span className="agui-pill agui-pill--xp" title="XP earned this session">
+        ⚡ {state.xp} XP
+      </span>
+      {/* Streak pill */}
+      {state.streak > 0 && (
+        <span className="agui-pill agui-pill--streak" title="Day streak">
+          🔥 {state.streak}d
+        </span>
+      )}
+      {/* Level pill */}
+      {state.level && (
+        <span className="agui-pill agui-pill--level" title="Skill level">
+          {state.level}
+        </span>
+      )}
+      {/* Active concept */}
+      {state.concept && (
+        <span className="agui-pill agui-pill--concept" title="Current concept">
+          📖 {state.concept}
+        </span>
+      )}
+      {/* Badges (up to 3) */}
+      {(state.badges || []).slice(0, 3).map(b => (
+        <span key={b} className="agui-pill agui-pill--badge" title={b}>🏅 {b}</span>
+      ))}
+      {/* Spacer */}
+      <span style={{ flex: 1 }} />
+      {/* Space dir selector */}
+      {editing ? (
+        <span className="agui-dir-row">
+          <input
+            className="agui-dir-input"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') setEditing(false); }}
+            placeholder="/path/to/space"
+            autoFocus
+          />
+          <button className="agui-dir-ok" onClick={commit}>✓</button>
+        </span>
+      ) : (
+        <button
+          className="agui-pill agui-pill--dir"
+          onClick={() => { setInput(state.space_dir || ''); setEditing(true); }}
+          title="Set active workspace directory"
+        >
+          {state.space_dir ? `📁 ${state.space_dir.split('/').slice(-2).join('/')}` : '📁 Set workspace'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+const STORAGE_KEY      = 'sarthak_chat_session_id';
+const STORAGE_KEY_AGUI = 'sarthak_agui_session_id';
+
+const loadStored = (mode) => {
+  try { return localStorage.getItem(mode === 'agui' ? STORAGE_KEY_AGUI : STORAGE_KEY) || null; } catch { return null; }
+};
+const saveStored = (sid, mode) => {
+  try {
+    const key = mode === 'agui' ? STORAGE_KEY_AGUI : STORAGE_KEY;
+    sid ? localStorage.setItem(key, sid) : localStorage.removeItem(key);
+  } catch {}
+};
 
 const SUGGESTIONS = [
   'What did I work on today?',
@@ -261,7 +338,7 @@ function EmptyState() {
 }
 
 // ── Thread ─────────────────────────────────────────────────────────────────────
-function ChatThread({ activeTools }) {
+function ChatThread({ activeTools, aguiState, onSetSpaceDir }) {
   return (
     <ThreadPrimitive.Root className="chat-thread">
       <ThreadPrimitive.Viewport className="chat-viewport">
@@ -272,6 +349,9 @@ function ChatThread({ activeTools }) {
       <ThreadPrimitive.ScrollToBottom className="chat-scroll-btn">
         ↓ Scroll to bottom
       </ThreadPrimitive.ScrollToBottom>
+      {aguiState && (
+        <LearnerStateBar state={aguiState} onSetSpaceDir={onSetSpaceDir} />
+      )}
       <ChatComposer />
     </ThreadPrimitive.Root>
   );
@@ -279,12 +359,14 @@ function ChatThread({ activeTools }) {
 
 /**
  * ChatSession — owns the runtime for one session.
- * Remounting this component (via key) creates a fresh runtime + empty thread.
- * sessionId/initialMessages are constructor-time values — changing them
- * requires a remount, not a prop update.
+ * Remounting (via key) creates a fresh runtime + empty thread.
  */
-function ChatSession({ sessionId, initialMessages, onSessionId, onToolEvent }) {
+function ChatSession({ sessionId, initialMessages, onSessionId, onToolEvent, mode = 'chat', spaceDir = '' }) {
   const [activeTools, setActiveTools] = useState([]);
+  const [aguiState,   setAguiState]   = useState(mode === 'agui'
+    ? { ...DEFAULT_AGUI_STATE, space_dir: spaceDir }
+    : null
+  );
 
   const handleToolEvent = useCallback(evt => {
     if (evt.type === 'tool_start')
@@ -298,34 +380,46 @@ function ChatSession({ sessionId, initialMessages, onSessionId, onToolEvent }) {
     onToolEvent?.(evt);
   }, [handleToolEvent, onToolEvent]);
 
+  const handleStateDelta = useCallback(newState => {
+    setAguiState(s => ({ ...s, ...newState }));
+  }, []);
+
+  const handleSetSpaceDir = useCallback(dir => {
+    setAguiState(s => ({ ...s, space_dir: dir }));
+  }, []);
+
   const runtime = useSarthakRuntime({
     sessionId,
     onSessionId,
     onToolEvent: combinedToolEvent,
     initialMessages,
+    mode,
+    agUiState:    aguiState ?? {},
+    onStateDelta: mode === 'agui' ? handleStateDelta : undefined,
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ChatThread activeTools={activeTools} />
+      <ChatThread
+        activeTools={activeTools}
+        aguiState={mode === 'agui' ? aguiState : null}
+        onSetSpaceDir={handleSetSpaceDir}
+      />
     </AssistantRuntimeProvider>
   );
 }
 
 // ── Main Chat page ─────────────────────────────────────────────────────────────
-export default function Chat() {
+export default function Chat({ mode = 'chat' }) {
   const { err } = useStore();
 
-  // activeSessionId: null = new chat (not yet assigned by server)
-  const [activeSessionId, setActiveSessionId] = useState(loadStored);
-  // sessionKey: bump to force full remount of ChatSession
-  const [sessionKey, setSessionKey] = useState(0);
-  // initialMessages: history to seed on session load (cleared after mount)
+  const [activeSessionId, setActiveSessionId] = useState(() => loadStored(mode));
+  const [sessionKey, setSessionKey]           = useState(0);
   const [initialMessages, setInitialMessages] = useState([]);
-  // sessions list for sidebar
-  const [sessions, setSessions] = useState([]);
+  const [sessions,        setSessions]        = useState([]);
+  // AG-UI: initial space_dir (user can change it inside ChatSession via LearnerStateBar)
+  const initialSpaceDir = '';
 
-  // Fetch sessions list
   const refreshSessions = useCallback(async () => {
     try {
       const r = await api('/chat/sessions');
@@ -335,19 +429,16 @@ export default function Chat() {
 
   useEffect(() => { refreshSessions(); }, [refreshSessions]);
 
-  // Called by ChatSession's runtime when server assigns a session id mid-stream
   const handleSessionId = useCallback((sid) => {
     setActiveSessionId(sid);
-    saveStored(sid);
+    saveStored(sid, mode);
     refreshSessions();
-  }, [refreshSessions]);
+  }, [refreshSessions, mode]);
 
-  // Switch to an existing session: load history then remount
   const openSession = useCallback(async (sid) => {
     if (!sid) {
-      // New chat
       setActiveSessionId(null);
-      saveStored(null);
+      saveStored(null, mode);
       setInitialMessages([]);
       setSessionKey(k => k + 1);
       return;
@@ -359,38 +450,36 @@ export default function Chat() {
       setInitialMessages([]);
     }
     setActiveSessionId(sid);
-    saveStored(sid);
+    saveStored(sid, mode);
     setSessionKey(k => k + 1);
-  }, []);
+  }, [mode]);
 
-  // Delete a session
   const deleteSession = useCallback(async (sid) => {
     try {
       await api(`/chat/sessions/${sid}`, { method: 'DELETE' });
       if (sid === activeSessionId) {
         setActiveSessionId(null);
-        saveStored(null);
+        saveStored(null, mode);
         setInitialMessages([]);
         setSessionKey(k => k + 1);
       }
       refreshSessions();
     } catch (e) { err(e.message); }
-  }, [activeSessionId, refreshSessions, err]);
+  }, [activeSessionId, refreshSessions, err, mode]);
 
-  // Auto-restore last session on mount
   const didRestore = useRef(false);
   useEffect(() => {
     if (didRestore.current) return;
     didRestore.current = true;
-    const stored = loadStored();
+    const stored = loadStored(mode);
     if (stored) openSession(stored);
-  }, [openSession]);
+  }, [openSession, mode]);
 
   return (
     <div className="page">
       <div className="chat-layout">
         <SessionSidebar
-          sessions={sessions}
+          sessions={mode === 'agui' ? [] : sessions}
           activeId={activeSessionId}
           onSelect={openSession}
           onNew={() => openSession(null)}
@@ -402,6 +491,8 @@ export default function Chat() {
             sessionId={activeSessionId}
             initialMessages={initialMessages}
             onSessionId={handleSessionId}
+            mode={mode}
+            spaceDir={initialSpaceDir}
           />
         </div>
       </div>

@@ -1,0 +1,39 @@
+id: spaces_context
+description: Get active space context — call first for any learning request
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_context
+---
+id: spaces_init
+description: Initialize a new Sarthak Space
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_init
+---
+id: spaces_session
+description: Run a learning session
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_session
+---
+id: spaces_status
+description: Show learner mastery progress
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_status
+---
+id: spaces_setup
+description: Set up expert environment for a space
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_setup
+---
+id: spaces_evaluate
+description: Evaluate learner submission and update mastery
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_evaluate
+---
+id: spaces_quick
+description: Run a 5-minute micro-learning task
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_quick
+---
+id: spaces_list
+description: List all known Sarthak Spaces
+module: sarthak.features.ai.tools.spaces
+function: tool_spaces_list

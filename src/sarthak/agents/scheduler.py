@@ -1,167 +1,136 @@
 """
 Sarthak Agent Engine — scheduler.
 
-Two agent classes managed here:
-  - SYSTEM agents: global scope, run on cron, no space context
-  - SPACE agents:  scoped to a space directory; get activity context injected
+run_scheduler_loop(interval=60) is called by the orchestrator service every 60s.
+Due agents fire as background asyncio.Tasks; duplicate concurrent runs are prevented.
 
-The orchestrator service calls `run_scheduler_loop()` every 60 seconds.
-Each due agent fires in a background task. Concurrent duplicate runs are prevented.
+Built-in agents are declared in data/agents/builtin.toml (no hardcoded Python dicts).
+Handler functions are registered via @register_handler("agent-id") decorator.
+Adding a new built-in: add [[agent]] to builtin.toml + @register_handler function here.
 
-Built-in system agents (auto-registered at startup):
-  - sarthak-daily-digest       (0 8 * * *)   — daily digest for every registered space
-  - sarthak-srs-push           (0 9 * * *)   — push SRS due cards via Telegram
-  - sarthak-recommendations    (0 * * * *)   — hourly recommendation refresh per space
-  - sarthak-weekly-digest      (0 9 * * 0)   — full week-in-review per space
-  - sarthak-workspace-analyse  (*/30 * * * *) — smart workspace re-analysis every 30 min
-
-Performance notes:
-  - All per-space work in built-in handlers runs concurrently via asyncio.gather.
-  - Heavy I/O (file writes, DB reads) is off-loaded to threads via asyncio.to_thread.
-  - Cache invalidation is fire-and-forget (non-blocking).
+Built-in agents:
+  sarthak-daily-digest       0 8 * * *    daily digest → Telegram
+  sarthak-srs-push           0 9 * * *    SRS due cards → Telegram
+  sarthak-recommendations    0 * * * *    hourly next-concept refresh
+  sarthak-weekly-digest      0 9 * * 0    week-in-review → Telegram
+  sarthak-workspace-analyse  */30 * * * * smart workspace re-analysis
 """
 from __future__ import annotations
 
 import asyncio
-import threading
+from collections.abc import Callable, Awaitable
 from datetime import datetime, timezone
 from pathlib import Path
 
 import structlog
 
 from sarthak.agents.models import AgentRun, AgentScope, AgentSpec
-from sarthak.agents.store import compute_next_run
+from sarthak.agents.store import (
+    compute_next_run, list_agents, load_agent,
+    new_run_id, save_agent, save_run, update_agent,
+)
 from sarthak.core.notify import send_telegram
-from sarthak.agents.store import list_agents, load_agent, new_run_id, save_agent, save_run, update_agent
 
 log = structlog.get_logger(__name__)
 
-# Track running tasks to avoid duplicate concurrent runs
+# ── State ─────────────────────────────────────────────────────────────────────
 _running: set[str] = set()
-_spaces_cache: list[tuple[Path, dict]] = []
-_spaces_cache_at: float = 0.0
-_SPACES_CACHE_TTL = 5.0
-_spaces_cache_lock = threading.Lock()  # sync lock — _valid_spaces() is a sync function
+_tasks:   set[asyncio.Task] = set()  # strong refs prevent premature GC
+
+_active_cache: list[tuple[Path, dict]] = []
+_active_cache_at: float = 0.0
+_ACTIVE_TTL = 2.0
+
+# Handler registry: agent_id → async handler fn
+_HANDLERS: dict[str, Callable[[AgentSpec], Awaitable[None]]] = {}
 
 
-# ── Built-in system agents ─────────────────────────────────────────────────────
+def register_handler(agent_id: str):
+    """Decorator: register an async handler for a built-in agent id."""
+    def _dec(fn: Callable[[AgentSpec], Awaitable[None]]):
+        _HANDLERS[agent_id] = fn
+        return fn
+    return _dec
 
-_BUILTIN_AGENTS: list[dict] = [
-    {
-        "agent_id":        "sarthak-daily-digest",
-        "name":            "Daily Digest",
-        "description":     "Builds and sends daily learning digest for all active spaces via Telegram.",
-        "prompt":          "Generate and send the daily learning digest for all registered Sarthak spaces. Include SRS reviews due, next recommended concepts, and progress summary.",
-        "schedule":        "0 8 * * *",
-        "tools":           [],
-        "notify_telegram": True,
-        "scope":           AgentScope.GLOBAL,
-    },
-    {
-        "agent_id":        "sarthak-srs-push",
-        "name":            "SRS Review Push",
-        "description":     "Checks all spaces for SRS cards due today and sends a Telegram reminder.",
-        "prompt":          "Check all registered Sarthak spaces for spaced repetition cards due today. Send a concise Telegram message listing what needs review.",
-        "schedule":        "0 9 * * *",
-        "tools":           [],
-        "notify_telegram": True,
-        "scope":           AgentScope.GLOBAL,
-    },
-    {
-        "agent_id":        "sarthak-recommendations",
-        "name":            "Hourly Recommendations",
-        "description":     "Runs every hour. Analyzes session signals and updates next-concept recommendations for all active spaces.",
-        "prompt":          "Analyze recent session signals and update recommended next concepts for all registered spaces.",
-        "schedule":        "0 * * * *",
-        "tools":           [],
-        "notify_telegram": False,
-        "scope":           AgentScope.GLOBAL,
-    },
-    {
-        "agent_id":        "sarthak-weekly-digest",
-        "name":            "Weekly Digest",
-        "description":     "Every Sunday at 9am: full week-in-review per space via Telegram.",
-        "prompt":          "Generate and send the weekly learning review for all registered Sarthak spaces.",
-        "schedule":        "0 9 * * 0",
-        "tools":           [],
-        "notify_telegram": True,
-        "scope":           AgentScope.GLOBAL,
-    },
-    {
-        "agent_id":        "sarthak-workspace-analyse",
-        "name":            "Workspace Analyser",
-        "description":     (
-            "Every 30 minutes: re-analyse all spaces and update Optimal_Learn.md + "
-            "recommendations.md. Skips a space if nothing has changed since last run "
-            "(no new sessions, notes, or file mtime changes). "
-            "Also writes a lightweight recommendations.md for fast orchestrator reads."
-        ),
-        "prompt":          "Analyse all registered spaces and refresh Optimal_Learn.md with current learner signals, recommendations, and workspace state.",
-        "schedule":        "*/30 * * * *",
-        "tools":           [],
-        "notify_telegram": False,
-        "scope":           AgentScope.GLOBAL,
-    },
 
-]
-
+# ── Built-in agent registration from TOML ────────────────────────────────────
 
 def ensure_builtin_agents() -> None:
-    """Register built-in system agents if they don't already exist."""
-    for spec_dict in _BUILTIN_AGENTS:
-        if load_agent(spec_dict["agent_id"]):
+    """
+    Register built-in agents declared in data/agents/builtin.toml.
+    Idempotent — skips agents already persisted to disk.
+    Falls back to empty list on any parse error (logged).
+    """
+    from sarthak.data.loader import load_builtin_agent_specs
+    specs = load_builtin_agent_specs()
+    if not specs:
+        log.warning("no_builtin_specs_loaded", hint="Check data/agents/builtin.toml")
+        return
+    for spec_dict in specs:
+        agent_id = spec_dict.get("agent_id", "")
+        if not agent_id:
             continue
-        spec = AgentSpec(**spec_dict)
-        save_agent(spec)
-        log.info("builtin_agent_registered", agent_id=spec.agent_id)
+        if load_agent(agent_id):
+            continue
+        # Strip non-AgentSpec keys before constructing
+        safe = {k: v for k, v in spec_dict.items()
+                if k in AgentSpec.model_fields and k != "handler"}
+        try:
+            save_agent(AgentSpec(**safe))
+            log.info("builtin_agent_registered", agent_id=agent_id)
+        except Exception as exc:
+            log.warning("builtin_agent_register_failed", agent_id=agent_id, error=str(exc))
 
 
-# ── Scheduler tick ─────────────────────────────────────────────────────────────
+# ── Tick ──────────────────────────────────────────────────────────────────────
 
 async def tick() -> list[str]:
-    """Check all enabled agents and fire any that are due. Returns triggered agent IDs."""
     now = datetime.now(timezone.utc)
+    active_dirs = {str(Path(sd).resolve()) for sd, _ in _active_spaces()}
     triggered: list[str] = []
 
     for spec in list_agents():
         if not spec.enabled or spec.agent_id in _running or not _is_due(spec, now):
             continue
+        if spec.scope == AgentScope.SPACE:
+            if not spec.space_dir:
+                continue
+            try:
+                if str(Path(spec.space_dir).resolve()) not in active_dirs:
+                    continue
+            except Exception:
+                continue
 
         triggered.append(spec.agent_id)
         _running.add(spec.agent_id)
 
-        async def _run_and_cleanup(s: AgentSpec) -> None:
+        async def _run(s: AgentSpec) -> None:
             try:
-                await _run_agent_with_context(s)
+                await _dispatch(s)
+            except Exception as exc:
+                log.error("agent_task_failed", agent_id=s.agent_id, error=str(exc))
             finally:
                 _running.discard(s.agent_id)
 
-        asyncio.create_task(_run_and_cleanup(spec))
-        log.info("agent_scheduled_run", agent_id=spec.agent_id, scope=spec.scope)
+        task = asyncio.create_task(_run(spec))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+        log.info("agent_scheduled", agent_id=spec.agent_id)
 
     return triggered
 
 
 def _is_due(spec: AgentSpec, now: datetime) -> bool:
-    """
-    Returns True if this agent should fire now.
-
-    Primary: use next_run_at (set after each run by compute_next_run).
-    Fallback: croniter.match for agents that have never run.
-    This avoids the 60s tick-drift problem where croniter.match misses the
-    exact minute when the scheduler fires 1-2s late.
-    """
     if not spec.schedule:
         return False
     if spec.next_run_at:
         try:
-            next_dt = datetime.fromisoformat(spec.next_run_at)
-            if next_dt.tzinfo is None:
-                next_dt = next_dt.replace(tzinfo=timezone.utc)
-            return now >= next_dt
+            nxt = datetime.fromisoformat(spec.next_run_at)
+            if nxt.tzinfo is None:
+                nxt = nxt.replace(tzinfo=timezone.utc)
+            return now >= nxt
         except Exception:
             pass
-    # No next_run_at yet (first ever run) — fall back to cron match
     try:
         from croniter import croniter
         return croniter.match(spec.schedule, now)
@@ -169,79 +138,69 @@ def _is_due(spec: AgentSpec, now: datetime) -> bool:
         return False
 
 
-# ── Activity-aware agent execution ─────────────────────────────────────────────
-
-async def _run_agent_with_context(spec: AgentSpec) -> None:
-    handlers = {
-        "sarthak-daily-digest":      _run_digest_agent,
-        "sarthak-srs-push":          _run_srs_push_agent,
-        "sarthak-recommendations":   _run_recommendations_agent,
-        "sarthak-weekly-digest":     _run_weekly_digest_agent,
-        "sarthak-workspace-analyse": _run_workspace_analyse_agent,
-    }
-    handler = handlers.get(spec.agent_id)
+async def _dispatch(spec: AgentSpec) -> None:
+    handler = _HANDLERS.get(spec.agent_id)
     if handler:
         await handler(spec)
-        return
-    from sarthak.agents.runner import run_agent
-    await run_agent(spec)
+    else:
+        from sarthak.agents.runner import run_agent
+        await run_agent(spec)
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
 async def _finish_run(spec: AgentSpec, run: AgentRun, output: str, success: bool = True) -> None:
-    run.output = output
-    run.success = success
+    run.output, run.success = output, success
     run.finished_at = datetime.now(timezone.utc).isoformat()
     save_run(spec, run)
     now_iso = datetime.now(timezone.utc).isoformat()
     update_agent(spec.agent_id, last_run_at=now_iso, next_run_at=compute_next_run(spec.schedule))
 
 
-async def _get_telegram_cfg() -> dict:
-    from sarthak.core.config import load_config
-    return load_config()
-
-
-def _valid_spaces() -> list[tuple[Path, dict]]:
-    """Return (space_dir, space_info) for all registered spaces that exist on disk."""
-    from sarthak.spaces.store import list_spaces
-    global _spaces_cache, _spaces_cache_at
-    now = datetime.now(timezone.utc).timestamp()
-    with _spaces_cache_lock:
-        if _spaces_cache and (now - _spaces_cache_at) < _SPACES_CACHE_TTL:
-            return list(_spaces_cache)
+def _active_spaces() -> list[tuple[Path, dict]]:
+    from sarthak.spaces.store import get_active_space, load_space
+    global _active_cache, _active_cache_at
+    import time as _time
+    now = _time.monotonic()
+    if _active_cache and (now - _active_cache_at) < _ACTIVE_TTL:
+        return list(_active_cache)
     result: list[tuple[Path, dict]] = []
-    for info in list_spaces():
-        sd = Path(info.get("directory", ""))
+    active = get_active_space()
+    if active and (d := active.get("directory")):
+        sd = Path(d)
         if sd.exists():
-            result.append((sd, info))
-    with _spaces_cache_lock:
-        _spaces_cache = result
-        _spaces_cache_at = now
+            cfg = load_space(sd) or {}
+            result = [(sd, {
+                "name": active.get("name") or cfg.get("name", sd.name),
+                "directory": str(sd),
+                "goal": cfg.get("goal", ""),
+                "space_type": (cfg.get("__profile__") or {}).get("space_type", ""),
+                "domain": (cfg.get("__profile__") or {}).get("domain", ""),
+            })]
+    _active_cache, _active_cache_at = result, now
     return result
 
 
-async def _run_per_space(
-    spaces: list[tuple[Path, dict]],
-    worker,
-) -> list:
-    """Run a per-space worker concurrently and filter falsy results."""
+def invalidate_active_space_cache() -> None:
+    global _active_cache, _active_cache_at
+    _active_cache, _active_cache_at = [], 0.0
+
+
+async def _run_per_space(spaces: list[tuple[Path, dict]], worker) -> list:
     results = await asyncio.gather(*[worker(sd, info) for sd, info in spaces])
     return [r for r in results if r]
 
 
-# ── Built-in handlers ──────────────────────────────────────────────────────────
+# ── Built-in handlers (registered via @register_handler) ──────────────────────
 
+@register_handler("sarthak-daily-digest")
 async def _run_digest_agent(spec: AgentSpec) -> None:
-    """Send daily digest for every registered space via Telegram — all spaces in parallel."""
     from sarthak.agents.roadmap_agents import build_digest
-
+    from sarthak.core.config import load_config
     run = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
-    cfg = await _get_telegram_cfg()
-    spaces = _valid_spaces()
+    cfg = load_config()
 
-    async def _do_one(sd: Path, info: dict) -> str | None:
+    async def _do(sd: Path, info: dict) -> str | None:
         try:
             digest = await build_digest(sd, info.get("name", sd.name))
             if spec.notify_telegram:
@@ -251,171 +210,89 @@ async def _run_digest_agent(spec: AgentSpec) -> None:
             log.warning("digest_failed", space=str(sd), error=str(exc))
             return None
 
-    outputs = await _run_per_space(spaces, _do_one)
-    output = "\n\n".join(outputs) if outputs else "No spaces to digest."
-    await _finish_run(spec, run, output, success=bool(outputs))
-    log.info("digest_agent_done", spaces=len(outputs))
+    outputs = await _run_per_space(_active_spaces(), _do)
+    await _finish_run(spec, run, "\n\n".join(outputs) or "No spaces.", success=bool(outputs))
 
 
+@register_handler("sarthak-srs-push")
 async def _run_srs_push_agent(spec: AgentSpec) -> None:
-    """Push SRS due cards for all spaces via Telegram — all spaces in parallel."""
     from datetime import date
     from sarthak.spaces.roadmap.srs import get_due
-
+    from sarthak.core.config import load_config
     run = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
-    cfg = await _get_telegram_cfg()
-    spaces = _valid_spaces()
+    cfg = load_config()
 
-    async def _do_one(sd: Path, info: dict) -> tuple[str, int] | None:
+    async def _do(sd: Path, info: dict) -> tuple[str, int] | None:
         try:
-            db_path = str(sd / ".spaces" / "sarthak.db")
-            due_cards = await get_due(db_path)
-            if not due_cards:
+            due = await get_due(str(sd / ".spaces" / "sarthak.db"))
+            if not due:
                 return None
-            name = info.get("name", sd.name)
-            card_lines = [f"{name}: {len(due_cards)} card(s) due"]
-            for card in due_cards[:6]:
-                label = card.concept or card.card_id
-                reason = f" ({card.reason})" if card.reason else ""
+            name  = info.get("name", sd.name)
+            lines = [f"{name}: {len(due)} card(s) due"]
+            for c in due[:6]:
                 try:
-                    overdue_days = (date.today() - date.fromisoformat(card.next_due)).days
-                    overdue_str = f" [{overdue_days}d overdue]" if overdue_days > 0 else ""
+                    od = (date.today() - date.fromisoformat(c.next_due)).days
+                    overdue_str = f" [{od}d overdue]" if od > 0 else ""
                 except Exception:
                     overdue_str = ""
-                card_lines.append(f"  - {label}{reason}{overdue_str}")
-            if len(due_cards) > 6:
-                card_lines.append(f"  ... and {len(due_cards) - 6} more")
-            return "\n".join(card_lines), len(due_cards)
+                lines.append(f"  - {c.concept or c.card_id}{overdue_str}")
+            if len(due) > 6:
+                lines.append(f"  ... and {len(due) - 6} more")
+            return "\n".join(lines), len(due)
         except Exception as exc:
             log.warning("srs_push_failed", space=str(sd), error=str(exc))
             return None
 
-    results = await _run_per_space(spaces, _do_one)
-    sections = ["SRS Review Due Today"]
-    total_due = 0
-    for r in results:
-        if r:
-            text, cnt = r
-            sections.append(text)
-            total_due += cnt
-
-    if total_due == 0:
+    results = await _run_per_space(_active_spaces(), _do)
+    total   = sum(r[1] for r in results if r)
+    if total == 0:
         output = "No SRS cards due today."
     else:
-        output = "\n\n".join(sections)
+        output = "SRS Review Due Today\n\n" + "\n\n".join(r[0] for r in results if r)
         if spec.notify_telegram:
             await send_telegram(cfg, output, agent_id=spec.agent_id)
-
-    await _finish_run(spec, run, output, success=True)
-    log.info("srs_push_done", total_due=total_due)
+    await _finish_run(spec, run, output)
 
 
+@register_handler("sarthak-recommendations")
 async def _run_recommendations_agent(spec: AgentSpec) -> None:
-    """
-    Refresh Optimal_Learn.md for all spaces in parallel.
-
-    Improvements:
-    - Passes real LearnerContext (weak/strong/SRS due) into WorkspaceAnalyserAgent.
-    - Also writes a plain-text recommendations summary to .spaces/recommendations.md
-      so the orchestrator can load them without re-parsing Optimal_Learn.md.
-    """
     from sarthak.spaces.models import SpaceContext
     from sarthak.spaces.store import load_profile
     from sarthak.spaces.agents import WorkspaceAnalyserAgent, detect_platform
-
-    run = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
+    run      = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
     analyser = WorkspaceAnalyserAgent()
-    spaces = _valid_spaces()
 
-    async def _do_one(sd: Path, info: dict) -> str | None:
+    async def _do(sd: Path, info: dict) -> str | None:
         try:
             profile = await asyncio.to_thread(load_profile, sd)
             if not profile:
                 return None
-            ctx = SpaceContext(
-                workspace_dir=str(sd),
-                profile=profile,
-                platform=detect_platform(),
-            )
-            # Full Optimal_Learn.md — includes LearnerContext + recommendations
+            ctx = SpaceContext(workspace_dir=str(sd), profile=profile, platform=detect_platform())
             content = await analyser.analyse(ctx)
             await asyncio.to_thread(analyser.write_optimal_learn, sd, content)
-
-            # Also write lightweight recommendations.md for fast orchestrator reads
             await asyncio.to_thread(_write_recommendations_summary, sd, profile)
-
             return info.get("name", sd.name)
         except Exception as exc:
             log.warning("recommendations_refresh_failed", space=str(sd), error=str(exc))
             return None
 
-    updated = await _run_per_space(spaces, _do_one)
-    output = f"Updated recommendations for: {', '.join(updated)}" if updated else "No spaces updated."
-    await _finish_run(spec, run, output, success=True)
-    log.info("recommendations_done", spaces=len(updated))
+    updated = await _run_per_space(_active_spaces(), _do)
+    await _finish_run(spec, run, f"Updated: {', '.join(updated)}" if updated else "No spaces updated.")
 
 
-def _write_recommendations_summary(space_dir: Path, profile) -> None:
-    """
-    Write a fast-load recommendations.md with the top 3 next concepts + reasons.
-    Uses recommend_with_reasons() — pure derived data, no LLM.
-    """
-    try:
-        from sarthak.spaces.roadmap.db import RoadmapDB
-        from sarthak.spaces.roadmap.recommend import recommend_with_reasons
-        import asyncio as _asyncio
-
-        async def _load():
-            db = RoadmapDB(space_dir)
-            await db.init()
-            return await db.load_roadmap()
-
-        try:
-            # We're running in asyncio.to_thread, so there's no running event loop here.
-            # Create a fresh loop for this blocking call.
-            roadmap = _asyncio.run(_load())
-        except RuntimeError:
-            roadmap = None
-
-        if not roadmap:
-            return
-
-        lp = profile.learner
-        recs = recommend_with_reasons(
-            roadmap,
-            top_k=3,
-            mastered=lp.mastered_concepts,
-            struggling=lp.struggling_concepts,
-            review_due=[],
-        )
-        if not recs:
-            return
-
-        lines = ["# Next Recommendations\n"]
-        for i, (concept, reason) in enumerate(recs, 1):
-            lines.append(f"{i}. **{concept.title}** — {reason}")
-
-        out = space_dir / ".spaces" / "recommendations.md"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("\n".join(lines), encoding="utf-8")
-    except Exception as exc:
-        log.debug("recommendations_summary_failed", error=str(exc))
-
-
+@register_handler("sarthak-weekly-digest")
 async def _run_weekly_digest_agent(spec: AgentSpec) -> None:
-    """Build week-in-review per space in parallel."""
     from datetime import date
     from sarthak.agents.roadmap_agents import build_digest
     from sarthak.storage.activity_store import activity_summary, concepts_touched
     from sarthak.spaces.agents import EngagementAgent
     from sarthak.spaces.store import load_profile
-
-    run = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
-    cfg = await _get_telegram_cfg()
+    from sarthak.core.config import load_config
+    run        = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
+    cfg        = load_config()
     engagement = EngagementAgent()
-    spaces = _valid_spaces()
 
-    async def _do_one(sd: Path, info: dict) -> str | None:
+    async def _do(sd: Path, info: dict) -> str | None:
         try:
             name = info.get("name", sd.name)
             base_digest, act, touched, profile = await asyncio.gather(
@@ -424,20 +301,18 @@ async def _run_weekly_digest_agent(spec: AgentSpec) -> None:
                 concepts_touched(str(sd), days=7),
                 asyncio.to_thread(load_profile, sd),
             )
-            enrich_lines = [f"\n## Week in Review — {date.today().strftime('%B %d, %Y')}"]
+            enrich = [f"\n## Week in Review — {date.today().strftime('%B %d, %Y')}"]
             if act:
-                enrich_lines.append("\n**Activity breakdown:**")
+                enrich.append("\n**Activity:**")
                 for atype, cnt in sorted(act.items(), key=lambda x: -x[1]):
-                    enrich_lines.append(f"- {atype.replace('_', ' ').title()}: {cnt}")
+                    enrich.append(f"- {atype.replace('_', ' ').title()}: {cnt}")
             if touched:
-                enrich_lines.append(f"\n**Concepts touched this week:** {', '.join(touched[:8])}")
-            combined = base_digest + "\n".join(enrich_lines)
+                enrich.append(f"\n**Concepts:** {', '.join(touched[:8])}")
+            combined = base_digest + "\n".join(enrich)
             if profile and profile.learner.background:
                 combined = await engagement.render(
-                    content={"weekly_digest": combined},
-                    learner_background=profile.learner.background,
-                    xp_earned=0,
-                    is_technical=profile.learner.is_technical,
+                    {"weekly_digest": combined}, profile.learner.background,
+                    0, is_technical=profile.learner.is_technical,
                 )
             if spec.notify_telegram:
                 await send_telegram(cfg, combined, agent_id=spec.agent_id)
@@ -446,109 +321,118 @@ async def _run_weekly_digest_agent(spec: AgentSpec) -> None:
             log.warning("weekly_digest_failed", space=str(sd), error=str(exc))
             return None
 
-    outputs = await _run_per_space(spaces, _do_one)
-    output = "\n\n".join(outputs) if outputs else "No spaces to review."
-    await _finish_run(spec, run, output, success=bool(outputs))
-    log.info("weekly_digest_done", spaces=len(outputs))
+    outputs = await _run_per_space(_active_spaces(), _do)
+    await _finish_run(spec, run, "\n\n".join(outputs) or "No spaces.", success=bool(outputs))
 
 
+@register_handler("sarthak-workspace-analyse")
 async def _run_workspace_analyse_agent(spec: AgentSpec) -> None:
-    """
-    Every 30 minutes: re-analyse all spaces and update Optimal_Learn.md.
-
-    Smart skip: each space is only re-analysed if something has actually changed
-    since the last Optimal_Learn.md was written (new session, new note, or any
-    file mtime change in the workspace). This avoids unnecessary LLM calls.
-    """
     from sarthak.spaces.models import SpaceContext
     from sarthak.spaces.store import load_profile
     from sarthak.spaces.agents import WorkspaceAnalyserAgent, detect_platform
-
-    run = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
+    run      = AgentRun(run_id=new_run_id(), agent_id=spec.agent_id)
     analyser = WorkspaceAnalyserAgent()
-    spaces = _valid_spaces()
 
-    async def _do_one(sd: Path, info: dict) -> str | None:
+    async def _do(sd: Path, info: dict) -> str | None:
+        if not _workspace_changed(sd):
+            return None
         try:
             profile = await asyncio.to_thread(load_profile, sd)
             if not profile:
                 return None
-
-            # ── Smart skip: only re-run if workspace has changed ───────────────
-            if not _workspace_changed_since_last_analyse(sd):
-                log.debug("workspace_analyse_skipped_no_change", space=str(sd))
-                return None
-
-            ctx = SpaceContext(
-                workspace_dir=str(sd),
-                profile=profile,
-                platform=detect_platform(),
-            )
+            ctx = SpaceContext(workspace_dir=str(sd), profile=profile, platform=detect_platform())
             content = await analyser.analyse(ctx)
             await asyncio.to_thread(analyser.write_optimal_learn, sd, content)
-
-            # Also write fast-load recommendations.md
             await asyncio.to_thread(_write_recommendations_summary, sd, profile)
-
-            log.info("workspace_analyse_done", space=info.get("name", sd.name))
             return info.get("name", sd.name)
         except Exception as exc:
             log.warning("workspace_analyse_failed", space=str(sd), error=str(exc))
             return None
 
-    updated = await _run_per_space(spaces, _do_one)
-    output = f"Analysed: {', '.join(updated)}" if updated else "No spaces needed re-analysis."
-    await _finish_run(spec, run, output, success=True)
-    log.info("workspace_analyse_agent_done", updated=len(updated), total=len(spaces))
+    updated = await _run_per_space(_active_spaces(), _do)
+    await _finish_run(spec, run, f"Analysed: {', '.join(updated)}" if updated else "No changes.")
 
 
-def _workspace_changed_since_last_analyse(space_dir: Path) -> bool:
-    """
-    Returns True if the workspace needs a fresh Optimal_Learn.md.
+# ── Pure sync helpers (safe for asyncio.to_thread) ────────────────────────────
 
-    Checks:
-    1. Optimal_Learn.md doesn't exist yet.
-    2. Any .spaces file (sessions.jsonl, notes_index.jsonl, sarthak.db)
-       is newer than the last Optimal_Learn.md write.
-    3. Any workspace file mtime in the top-level dirs is newer.
-
-    This is purely file-stat — no DB, no LLM, no I/O beyond stat() calls.
-    """
+def _workspace_changed(space_dir: Path) -> bool:
+    """True if any signal file is newer than Optimal_Learn.md (stat-only)."""
     import os
     optimal = space_dir / ".spaces" / "Optimal_Learn.md"
     if not optimal.exists():
         return True
-
-    last_analyse = optimal.stat().st_mtime
-
-    # Check .spaces signal files
-    signal_files = [
+    t = optimal.stat().st_mtime
+    for sig in [
         space_dir / ".spaces" / "sessions.jsonl",
         space_dir / ".spaces" / "notes_index.jsonl",
         space_dir / ".spaces" / "sarthak.db",
         space_dir / ".spaces" / "USER.md",
-    ]
-    for f in signal_files:
-        if f.exists() and f.stat().st_mtime > last_analyse:
+    ]:
+        if sig.exists() and sig.stat().st_mtime > t:
             return True
-
-    # Check top-level workspace dirs (depth-1 only — fast)
     try:
         for entry in os.scandir(space_dir):
-            if entry.name.startswith("."):
-                continue
-            if entry.stat().st_mtime > last_analyse:
+            if not entry.name.startswith(".") and entry.stat().st_mtime > t:
                 return True
     except Exception:
         pass
-
     return False
+
+
+def _load_roadmap_sync(space_dir: Path):
+    """
+    Load roadmap using stdlib sqlite3 — safe for asyncio.to_thread.
+    No asyncio.Lock, no aiosqlite pool, opens/closes within this call.
+    """
+    import sqlite3
+    from sarthak.spaces.roadmap.models import Roadmap
+    db_path = space_dir / ".spaces" / "sarthak.db"
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(str(db_path), timeout=5, check_same_thread=False) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            row = conn.execute("SELECT blob FROM roadmap WHERE id=1").fetchone()
+        if not row:
+            return None
+        return Roadmap.model_validate_json(row[0]).sorted_by_order()
+    except Exception as exc:
+        log.debug("roadmap_sync_load_failed", space=str(space_dir), error=str(exc))
+        return None
+
+
+def _write_recommendations_summary(space_dir: Path, profile) -> None:
+    """
+    Write recommendations.md — top-3 next concepts, no LLM.
+    Safe for asyncio.to_thread (stdlib sqlite3 only).
+    """
+    try:
+        from sarthak.spaces.roadmap.recommend import recommend_with_reasons
+        roadmap = _load_roadmap_sync(space_dir)
+        if not roadmap:
+            return
+        lp   = profile.learner
+        recs = recommend_with_reasons(
+            roadmap, top_k=3,
+            mastered=lp.mastered_concepts,
+            struggling=lp.struggling_concepts,
+            review_due=[],
+        )
+        if not recs:
+            return
+        lines = ["# Next Recommendations\n"]
+        lines.extend(f"{i}. **{c.title}** — {r}" for i, (c, r) in enumerate(recs, 1))
+        out = space_dir / ".spaces" / "recommendations.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n".join(lines), encoding="utf-8")
+    except Exception as exc:
+        log.debug("recommendations_summary_failed", error=str(exc))
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 async def run_scheduler_loop(interval_seconds: int = 60) -> None:
-    """Long-running loop — called from orchestrator service."""
     ensure_builtin_agents()
     log.info("agent_scheduler_started", interval=interval_seconds)
     while True:

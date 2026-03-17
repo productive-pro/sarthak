@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useStore } from '../store';
-import { DashIcon, ChatIcon, SpaceIcon, AgentIcon, ConfigIcon } from './icons';
+import { DashIcon, ChatIcon, SpaceIcon, AgentIcon, ConfigIcon, AguiIcon } from './icons';
 import SettingsPanel from './SettingsPanel';
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', Icon: DashIcon },
   { id: 'chat',      label: 'Chat',      Icon: ChatIcon },
+  { id: 'agui',      label: 'Copilot',   Icon: AguiIcon },
   { id: 'spaces',    label: 'Spaces',    Icon: SpaceIcon },
   { id: 'agents',    label: 'Agents',    Icon: AgentIcon },
   { id: 'config',    label: 'Config',    Icon: ConfigIcon },

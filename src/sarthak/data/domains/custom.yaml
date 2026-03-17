@@ -1,0 +1,12 @@
+# Domain: Custom Learning Space
+# Minimal placeholder — actual domain is populated by discover_custom_domain()
+# in spaces/roadmap_init.py during space creation.
+
+concept_tree:
+  novice:
+    - "Define your learning goals"
+    - "Map out what you want to learn"
+
+tools: []
+
+projects: []

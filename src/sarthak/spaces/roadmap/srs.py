@@ -187,8 +187,16 @@ def _initial_interval(initial_grade: int) -> int:
 # but aiosqlite.Connection.__aexit__ does NOT close the connection).
 
 _POOL: dict[str, tuple[aiosqlite.Connection, _asyncio.Lock]] = {}
-_POOL_LOCK = _asyncio.Lock()
+_POOL_LOCK: _asyncio.Lock | None = None   # lazy — created on first use inside event loop
 _INIT_DONE: set[str] = set()
+
+
+def _get_pool_lock() -> _asyncio.Lock:
+    """Return the global pool lock, creating it lazily inside the running event loop."""
+    global _POOL_LOCK
+    if _POOL_LOCK is None:
+        _POOL_LOCK = _asyncio.Lock()
+    return _POOL_LOCK
 
 
 async def _ensure_schema(db: aiosqlite.Connection) -> None:
@@ -218,7 +226,7 @@ async def _get_conn(db_path: str) -> tuple[aiosqlite.Connection, _asyncio.Lock]:
     """Return the pooled connection and write lock for a database path."""
     norm_path = str(Path(db_path).resolve())
 
-    async with _POOL_LOCK:
+    async with _get_pool_lock():
         if norm_path not in _POOL:
             conn = await aiosqlite.connect(norm_path)
             conn.row_factory = aiosqlite.Row
@@ -239,7 +247,7 @@ async def _get_conn(db_path: str) -> tuple[aiosqlite.Connection, _asyncio.Lock]:
                     _INIT_DONE.add(norm_path)
                 except Exception:
                     # Remove broken entry so next call retries
-                    async with _POOL_LOCK:
+                    async with _get_pool_lock():
                         _POOL.pop(norm_path, None)
                     raise
 

@@ -46,6 +46,8 @@ dependencies = [
     "pytz",
     "python-telegram-bot",
     "croniter",
+    # Domain data loader
+    "pyyaml",
     # Roadmap system
     "aiosqlite",
     "sqlite-vec",
@@ -57,6 +59,8 @@ dependencies = [
     "neonize",
     "qrcode",
     "slowapi",
+    "pytesseract>=0.3.13",
+    "pdf2image>=1.17.0",
 ]
 
 [project.urls]
@@ -129,6 +133,7 @@ source = "vcs"
 # Include react_dist in the source tarball so wheel-from-sdist works too
 include = [
     "/src",
+    "/data",
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",
@@ -146,8 +151,6 @@ artifacts = [
     "src/sarthak/web/react_dist/**",
 ]
 
-
-[tool.uv]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

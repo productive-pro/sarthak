@@ -1,0 +1,9 @@
+id: service_status
+description: Check system service status
+module: sarthak.features.ai.tools.system
+function: tool_service_status
+---
+id: restart_service
+description: Restart a system service
+module: sarthak.features.ai.tools.system
+function: tool_restart_service

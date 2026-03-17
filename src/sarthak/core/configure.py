@@ -908,6 +908,126 @@ def _configure_whatsapp_qr(toml_data: dict) -> bool:
     return True
 
 
+def _section_whatsapp_allowed_senders(toml_data: dict) -> bool:
+    """Manage allowed_numbers and allowed_group_jids lists. Returns toml_dirty.
+
+    allowed_numbers    — list of phone numbers (e.g. ["919014633844"]) that may
+                         send direct messages to the bot.  Empty = self-only.
+    allowed_group_jids — list of group JIDs (e.g. ["120363xxxxxx@g.us"]) whose
+                         messages the bot will process.  Empty = use allow_groups toggle.
+    """
+    toml_dirty = False
+
+    def _get_list(key: str) -> list[str]:
+        val = toml_data.get("whatsapp", {}).get(key, [])
+        if isinstance(val, list):
+            return [str(v) for v in val]
+        return []
+
+    def _set_list(key: str, items: list[str]) -> None:
+        import tomlkit as _tk
+        if "whatsapp" not in toml_data:
+            toml_data["whatsapp"] = _tk.table()
+        arr = _tk.array()
+        for item in items:
+            arr.append(item)
+        toml_data["whatsapp"][key] = arr
+
+    while True:
+        nums  = _get_list("allowed_numbers")
+        grps  = _get_list("allowed_group_jids")
+
+        hdr("WhatsApp — Allowed Senders")
+        dim("Default (empty lists): bot replies only to your own messages (self-chat).")
+        dim("Add phone numbers (no '+', no spaces) to allow direct-message access.")
+        dim("Add group JIDs (format: 120363xxxxxx@g.us) to allow group access.")
+        click.echo("")
+        info(f"Allowed numbers ({len(nums)}): {', '.join(nums) if nums else '(self-only)'}")
+        info(f"Allowed groups  ({len(grps)}): {', '.join(grps) if grps else '(use toggle)'}")
+        click.echo("")
+
+        choices = [
+            questionary.Choice("  Add a phone number",       value="add_num"),
+            questionary.Choice("  Remove a phone number",    value="rm_num"),
+            questionary.Choice("  Add a group JID",          value="add_grp"),
+            questionary.Choice("  Remove a group JID",       value="rm_grp"),
+            questionary.Choice("  Clear all numbers (self-only)", value="clear_nums"),
+            questionary.Choice("  Clear all group JIDs",    value="clear_grps"),
+            questionary.Separator(),
+            questionary.Choice("  <- Back",                  value="__back__"),
+        ]
+
+        action = q_select("Action", choices=choices, style=_STYLE, pointer=_POINTER).ask()
+        if action in (None, "__back__"):
+            break
+
+        if action == "add_num":
+            dim("Phone number without '+' or spaces, e.g. 919014633844")
+            val = q_text("Phone number", style=_STYLE).ask()
+            if val and val.strip():
+                nums.append(val.strip())
+                _set_list("allowed_numbers", nums)
+                toml_dirty = True
+                ok(f"Added {val.strip()} to allowed numbers")
+
+        elif action == "rm_num":
+            if not nums:
+                warn("No numbers to remove.")
+                continue
+            sel = q_select(
+                "Remove number",
+                choices=[questionary.Choice(f"  {n}", value=n) for n in nums]
+                        + [questionary.Choice("  <- Back", value="__back__")],
+                style=_STYLE, pointer=_POINTER,
+            ).ask()
+            if sel and sel != "__back__":
+                nums = [n for n in nums if n != sel]
+                _set_list("allowed_numbers", nums)
+                toml_dirty = True
+                ok(f"Removed {sel}")
+
+        elif action == "add_grp":
+            dim("Group JID, e.g. 120363xxxxxx@g.us  (find via /status in the group)")
+            val = q_text("Group JID", style=_STYLE).ask()
+            if val and val.strip():
+                grps.append(val.strip())
+                _set_list("allowed_group_jids", grps)
+                toml_dirty = True
+                ok(f"Added {val.strip()} to allowed groups")
+
+        elif action == "rm_grp":
+            if not grps:
+                warn("No group JIDs to remove.")
+                continue
+            sel = q_select(
+                "Remove group",
+                choices=[questionary.Choice(f"  {g}", value=g) for g in grps]
+                        + [questionary.Choice("  <- Back", value="__back__")],
+                style=_STYLE, pointer=_POINTER,
+            ).ask()
+            if sel and sel != "__back__":
+                grps = [g for g in grps if g != sel]
+                _set_list("allowed_group_jids", grps)
+                toml_dirty = True
+                ok(f"Removed {sel}")
+
+        elif action == "clear_nums":
+            confirmed = q_confirm("Clear all allowed numbers? (bot will revert to self-only)", default=False, style=_STYLE).ask()
+            if confirmed:
+                _set_list("allowed_numbers", [])
+                toml_dirty = True
+                ok("Allowed numbers cleared — self-only mode")
+
+        elif action == "clear_grps":
+            confirmed = q_confirm("Clear all allowed group JIDs?", default=False, style=_STYLE).ask()
+            if confirmed:
+                _set_list("allowed_group_jids", [])
+                toml_dirty = True
+                ok("Allowed group JIDs cleared")
+
+    return toml_dirty
+
+
 def _section_whatsapp_settings(toml_data: dict) -> bool:
     """Edit all neonize-relevant WhatsApp settings. Returns toml_dirty.
 
@@ -954,16 +1074,28 @@ def _section_whatsapp_settings(toml_data: dict) -> bool:
             )
             for label, path, _, default in bool_settings
         ]
+        nums_count = len(toml_data.get("whatsapp", {}).get("allowed_numbers", []) or [])
+        grps_count = len(toml_data.get("whatsapp", {}).get("allowed_group_jids", []) or [])
+        senders_label = (
+            f"self-only" if (nums_count == 0 and grps_count == 0)
+            else f"{nums_count} number(s), {grps_count} group(s)"
+        )
         all_choices = (
             str_choices
             + [questionary.Separator("── toggles ──")]
             + bool_choices
+            + [questionary.Separator("── reply policy ──")]
+            + [questionary.Choice(f"  Allowed senders          [{senders_label}]", value="__allowed_senders__")]
             + [questionary.Separator(), questionary.Choice("  <- Back", value="__back__")]
         )
 
         sel = q_select("Setting", choices=all_choices, style=_STYLE, pointer=_POINTER).ask()
         if sel in (None, "__back__"):
             break
+
+        if sel == "__allowed_senders__":
+            toml_dirty |= _section_whatsapp_allowed_senders(toml_data)
+            continue
 
         # String settings
         str_entry = next((e for e in settings if e[0] == sel), None)

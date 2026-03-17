@@ -167,7 +167,7 @@ async def get_roadmap(space: str) -> dict[str, Any]:
     roadmap = await db.load_roadmap()
     if roadmap is None:
         raise HTTPException(status_code=404, detail="Roadmap not initialized")
-    updated = roadmap.compute_all_progress()
+    updated = roadmap.sorted_by_order().compute_all_progress()
     return updated.to_dict()
 
 

@@ -90,8 +90,40 @@ function SpaceSettingsOverlay({ space, onClose, defaultTab }) {
 }
 
 // ── Space Home ────────────────────────────────────────────────────────────────
+// ── WelcomeBanner — shown once after space creation (Fix 9) ──────────────────
+function WelcomeBanner({ spaceName, firstConcept, onEnterConcept, onDismiss }) {
+  return (
+    <div style={{
+      marginBottom: 16,
+      padding: '14px 18px',
+      background: 'linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, var(--surface)) 0%, var(--surface) 100%)',
+      border: '1px solid var(--accent-border)',
+      borderLeft: '3px solid var(--accent)',
+      borderRadius: 10,
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: 14,
+      animation: 'ovFadeUp .4s ease both',
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 3 }}>Welcome to your space</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--txt)', marginBottom: 6 }}>Your roadmap has been personalised for <strong>{spaceName}</strong>.</div>
+        <div style={{ fontSize: 12, color: 'var(--txt2)', lineHeight: 1.55 }}>
+          Work through chapters in order — each one builds on the last. Use quicktests and notes to lock in understanding before moving on.
+        </div>
+        {firstConcept && (
+          <button className="btn btn-accent btn-sm" style={{ marginTop: 10 }} onClick={onEnterConcept}>
+            Start with: {firstConcept}
+          </button>
+        )}
+      </div>
+      <button className="btn btn-ghost btn-xs" style={{ flexShrink: 0, fontSize: 18, lineHeight: 1, padding: '0 2px', color: 'var(--txt3)' }} onClick={onDismiss} title="Dismiss">×</button>
+    </div>
+  );
+}
+
 function SpaceHome() {
-  const { currentSpace, spaceRoadmap, setSpaceRoadmap, setCurrentChapter, setCurrentTopic, setSpacesView, ok, err } = useStore();
+  const { currentSpace, setCurrentSpace, spaceRoadmap, setSpaceRoadmap, setCurrentChapter, setCurrentTopic, setSpacesView, justCreatedSpace, clearJustCreatedSpace, ok, err } = useStore();
   const [hero, setHero] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [activePanel, setActivePanel] = useState(null);
@@ -106,8 +138,19 @@ function SpaceHome() {
 
   const loadHero = useCallback(async () => {
     if (!sid) return;
-    try { setHero(await api(`/spaces/${sid}/profile`)); } catch {}
-  }, [sid]);
+    try {
+      const h = await api(`/spaces/${sid}/profile`);
+      setHero(h);
+      // Backfill space_type and domain into currentSpace if missing (registry gap)
+      if (h && (!currentSpace?.space_type || !currentSpace?.domain)) {
+        setCurrentSpace({
+          ...currentSpace,
+          space_type: h.space_type || currentSpace?.space_type || 'custom',
+          domain:     h.domain     || currentSpace?.domain     || '',
+        });
+      }
+    } catch {}
+  }, [sid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadRoadmap = useCallback(async () => {
     try { setSpaceRoadmap(await api(`/spaces/${sid}/roadmap`)); } catch {}
@@ -243,6 +286,20 @@ function SpaceHome() {
       </header>
 
       <div className="pg-body">
+        {/* Welcome banner — shown once after space creation */}
+        {justCreatedSpace === currentSpace?.name && (
+          <WelcomeBanner
+            spaceName={currentSpace.name}
+            firstConcept={spaceRoadmap?.chapters?.[0]?.topics?.[0]?.concepts?.[0]?.title || null}
+            onEnterConcept={() => {
+              clearJustCreatedSpace();
+              const ch = spaceRoadmap?.chapters?.[0];
+              const tp = ch?.topics?.[0];
+              if (ch && tp) { setCurrentChapter({ id: ch.id, title: ch.title, data: ch }); setCurrentTopic({ ...tp, chapterId: ch.id }); setSpacesView('topic'); }
+            }}
+            onDismiss={clearJustCreatedSpace}
+          />
+        )}
         {/* Insights preview */}
         {insightsPreview && (
           <div style={{ marginBottom:16,padding:'10px 16px',background:'var(--surface)',border:'1px solid var(--accent-border)',borderRadius:10,borderLeft:'3px solid var(--accent)',cursor:'pointer',transition:'background 0.15s' }}
@@ -390,7 +447,7 @@ function ChapterView() {
   const generateConcepts=async(tpId,instruction='')=>{
     try{ok('Generating concepts…');const ch=getChapter();const topic=(ch.topics||[]).find(t=>t.id===tpId);if(!topic)return;
     const r=await api(`/spaces/${spaceId}/roadmap/generate-children`,{method:'POST',body:JSON.stringify({parent_type:'topic',parent_title:topic.title,instruction:instruction.trim()})});
-    const newConcepts=(r.children||[]).map((cTitle,i)=>({id:`cn_${Date.now().toString(36)}_${i}`,title:cTitle,description:'',status:'not_started',order:(topic.concepts||[]).length+i}));
+    const newConcepts=(r.children||[]).map((cTitle,i)=>({id:`cn_${Date.now().toString(36)}_${i}`,title:cTitle,description:'',status:'not_started',order:(topic.concepts||[]).length+i,tags:[],related_concepts:[],notes:[],quicktests:[]}));
     await patchRoadmapChapter({...ch,topics:(ch.topics||[]).map(t=>t.id!==tpId?t:{...t,concepts:[...(t.concepts||[]),...newConcepts]})});ok('Concepts generated.');}catch(e){err(e.message);}
   };
 
@@ -425,7 +482,7 @@ function ChapterView() {
               :<Reorderable items={topics} itemKey={tp=>tp.id} colKey="topics"
                   onReorder={async(ts)=>{const ch=getChapter();await patchRoadmapChapter({...ch,topics:ts.map((t,i)=>({...t,order:i}))});}}
                   renderItem={tp=><TopicCard topic={tp} onOpen={()=>{setCurrentTopic({...tp,chapterId:currentChapter.id});setSpacesView('topic');}}
-                    onDelete={async()=>{if(!confirm('Delete topic?'))return;const ch=getChapter();await patchRoadmapChapter({...ch,topics:(ch.topics||[]).filter(t=>t.id!==tp.id)});}}
+                    onDelete={async()=>{if(!confirm('Delete topic?'))return;const ch=getChapter();await patchRoadmapChapter({...ch,topics:(ch.topics||[]).filter(t=>t.id!==tp.id).map((t,i)=>({...t,order:i}))});}}
                     onGenerate={()=>setPromptBar({type:'concept_generate',tpId:tp.id,title:tp.title,value:''})}/>}/>}
             </div>
           )}
@@ -443,10 +500,14 @@ function TopicCard({topic:tp,onOpen,onDelete,onGenerate}){
   const testsTaken=concepts.reduce((sum,c)=>sum+((c.quicktests||[]).length),0);
   const testedConcepts=concepts.filter(c=>(c.quicktests||[]).length>0).length;
   const coveragePct=concepts.length?Math.round((testedConcepts/concepts.length)*100):0;
+  const topicNum = (tp.order ?? 0) + 1;
   return(
     <div className="lift" onClick={onOpen} style={{ background:'var(--surface)',borderRadius:12,padding:20,border:'1px solid var(--brd)',cursor:'pointer',display:'flex',flexDirection:'column',gap:14,boxShadow:'var(--shadow-sm)',minHeight:180 }}>
       <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start' }}>
-        <h3 style={{ margin:0,fontSize:15,color:'var(--txt)',fontWeight:650,lineHeight:1.3 }}>{tp.title}</h3>
+        <div style={{ flex:1,minWidth:0 }}>
+          <div style={{ fontSize:10,fontWeight:700,color:'var(--txt3)',letterSpacing:'.05em',textTransform:'uppercase',marginBottom:3 }}>Topic {topicNum}</div>
+          <h3 style={{ margin:0,fontSize:15,color:'var(--txt)',fontWeight:650,lineHeight:1.3 }}>{tp.title}</h3>
+        </div>
         <div onClick={e=>e.stopPropagation()}>
           <DropdownMenu trigger={<button className="btn btn-ghost btn-xs" style={{ padding:'2px 6px' }}>⋮</button>}
             items={[{label:'Generate Concepts (LLM)',onClick:onGenerate},{label:'Delete Topic',danger:true,onClick:onDelete}]}/>
@@ -464,9 +525,38 @@ function TopicCard({topic:tp,onOpen,onDelete,onGenerate}){
         <span className="badge badge-muted">Coverage: {coveragePct}%</span>
       </div>
       <div style={{ fontSize:12,color:'var(--txt3)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden' }}>
-        {concepts.length===0?<span style={{ fontStyle:'italic' }}>No concepts yet.</span>:concepts.map(c=>c.title).join(' · ')}
+        {concepts.length===0?<span style={{ fontStyle:'italic' }}>No concepts yet.</span>
+         :concepts.map((c,i)=><span key={c.id}><span style={{ color:'var(--txt3)',opacity:.5 }}>{i+1}.</span> {c.title}{i<concepts.length-1?<span style={{ opacity:.3 }}> · </span>:''}</span>)}
       </div>
     </div>
+  );
+}
+
+// ── Concept sidebar header: count + filter + inline add ───────────────────────
+function ConceptSidebarHeader({ concepts, cnSearch, setCnSearch, onAdd }) {
+  const [adding, setAdding] = useState(false);
+  const [val, setVal] = useState('');
+  const commit = () => { onAdd(val); setVal(''); setAdding(false); };
+  return (
+    <>
+      <div className="card-hdr" style={{ padding:'8px 10px 8px 12px' }}>
+        <span>Concepts <span style={{ color:'var(--txt3)',fontWeight:400,fontSize:10 }}>{concepts.length}</span></span>
+        <button className="btn btn-ghost btn-xs" title="Add concept" onClick={()=>setAdding(a=>!a)}
+          style={{ fontSize:16,lineHeight:1,padding:'0 4px',color: adding ? 'var(--accent)' : 'var(--txt3)' }}>+</button>
+      </div>
+      {adding && (
+        <div style={{ padding:'6px 8px',borderBottom:'1px solid var(--brd)',flexShrink:0,display:'flex',gap:4 }}>
+          <input className="s-input" style={{ fontSize:12,padding:'4px 8px',flex:1 }} autoFocus
+            value={val} onChange={e=>setVal(e.target.value)} placeholder="Concept title…"
+            onKeyDown={e=>{ if(e.key==='Enter')commit(); if(e.key==='Escape'){setAdding(false);setVal('');} }}/>
+          <button className="btn btn-accent btn-xs" onClick={commit}>Add</button>
+        </div>
+      )}
+      <div style={{ padding:'6px 8px',borderBottom:'1px solid var(--brd)',flexShrink:0 }}>
+        <input className="s-input" style={{ fontSize:12,padding:'4px 8px' }} placeholder="Filter…"
+          value={cnSearch} onChange={e=>setCnSearch(e.target.value)}/>
+      </div>
+    </>
   );
 }
 
@@ -504,9 +594,11 @@ function TopicView(){
 
   const importConceptDocument=async(file,mode='vision')=>{if(!file)return;try{const form=new FormData();form.append('file',file);const res=await fetch(`/api/spaces/${spaceId}/notes/import?concept_id=${encodeURIComponent(activeCn)}&ocr_mode=${encodeURIComponent(mode)}`,{method:'POST',body:form});if(!res.ok){let msg=`HTTP ${res.status}`;try{msg=(await res.json()).detail||msg;}catch{}throw new Error(msg);}const data=await res.json().catch(()=>({}));const md=(data.markdown||'').trim();if(!md){err('No content extracted.');return;}setNoteVal(prev=>prev?`${prev.trim()}\n\n${md}`:md);ok('Document converted to markdown.');}catch(e){err(e.message);}};
 
+  const reorder=arr=>arr.map((x,i)=>({...x,order:i}));
   const markConceptStatus=async(cnId,status)=>{try{await patchTopic(concepts.map(cn=>cn.id===cnId?{...cn,status}:cn));ok(status==='completed'?'Marked complete':'Status updated');}catch{}};
   const renameConcept=async(cnId,title)=>{try{await patchTopic(concepts.map(cn=>cn.id===cnId?{...cn,title}:cn));ok('Renamed');}catch{err('Failed');}setEditingCnId(null);};
-  const deleteConcept=async(cnId)=>{if(!confirm('Delete this concept?'))return;try{await patchTopic(concepts.filter(cn=>cn.id!==cnId));if(activeCn===cnId)setActiveCn(null);ok('Deleted');}catch{err('Failed');}};
+  const deleteConcept=async(cnId)=>{if(!confirm('Delete this concept?'))return;try{await patchTopic(reorder(concepts.filter(cn=>cn.id!==cnId)));if(activeCn===cnId)setActiveCn(null);ok('Deleted');}catch{err('Failed');}};  
+  const addConcept=async(title)=>{const t=title.trim();if(!t)return;const newCn={id:`cn_${Date.now().toString(36)}`,title:t,description:'',status:'not_started',order:concepts.length,tags:[],related_concepts:[],notes:[],quicktests:[]};try{await patchTopic(reorder([...concepts,newCn]));ok(`Concept "${t}" added`);}catch(e){err(e.message);}};
 
   useEffect(()=>{let el=document.getElementById('__sarthak_space');if(!el){el=document.createElement('div');el.id='__sarthak_space';el.style.display='none';document.body.appendChild(el);}el.dataset.id=sid;return()=>{el.dataset.id='';};}, [sid]);
 
@@ -532,27 +624,47 @@ function TopicView(){
       <div style={{ flex:1,display:'flex',overflow:'hidden',minHeight:0 }}>
         {/* Concept sidebar */}
         <div style={{ width:sidebarWidth,flexShrink:0,display:'flex',flexDirection:'column',borderRight:'1px solid var(--brd)',background:'var(--surface)',overflow:'hidden',position:'relative' }}>
-          <div className="card-hdr" style={{ padding:'10px 12px' }}><span>Concepts</span><span className="txt-xs">{concepts.length}</span></div>
-          <div style={{ padding:'6px 8px',borderBottom:'1px solid var(--brd)',flexShrink:0 }}>
-            <input className="s-input" style={{ fontSize:12,padding:'4px 8px' }} placeholder="Filter…" value={cnSearch} onChange={e=>setCnSearch(e.target.value)}/>
-          </div>
+          <ConceptSidebarHeader concepts={concepts} cnSearch={cnSearch} setCnSearch={setCnSearch} onAdd={addConcept}/>
           <div onMouseDown={onSidebarDrag} style={{ position:'absolute',right:0,top:0,bottom:0,width:5,cursor:'col-resize',zIndex:10 }} onMouseEnter={e=>e.currentTarget.style.background='var(--accent-border)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}/>
           <div style={{ flex:1,overflowY:'auto',padding:'6px',display:'flex',flexDirection:'column',gap:2 }}>
-            {[{id:null,title:`All — ${currentTopic.title.slice(0,18)}`},...concepts.filter(cn=>!cnSearch.trim()||cn.title.toLowerCase().includes(cnSearch.toLowerCase()))].map(cn=>(
-              <div key={cn.id??'__all__'} style={{ display:'flex',alignItems:'center',borderRadius:6,background:activeCn===cn.id?'var(--accent-dim)':'transparent',border:`1px solid ${activeCn===cn.id?'var(--accent-border)':'transparent'}`,transition:'background 120ms' }}>
-                {editingCnId===cn.id
-                  ?<input ref={editInputRef} defaultValue={cn.title} onBlur={e=>renameConcept(cn.id,e.target.value.trim()||cn.title)} onKeyDown={e=>{if(e.key==='Enter')renameConcept(cn.id,e.target.value.trim()||cn.title);if(e.key==='Escape')setEditingCnId(null);}} style={{ flex:1,fontSize:12.5,padding:'6px 10px',background:'var(--surface2)',border:'1px solid var(--accent-border)',borderRadius:5,color:'var(--txt)',fontFamily:'var(--font)',outline:'none' }} onClick={e=>e.stopPropagation()}/>
-                  :<button onClick={()=>{setActiveCn(cn.id);loadConceptNote(cn.id);}} style={{ flex:1,textAlign:'left',background:'transparent',border:'none',padding:'7px 10px',cursor:'pointer',color:'var(--txt2)',fontSize:12.5,fontWeight:cn.id===null?600:500,fontFamily:'var(--font)' }}>{cn.title}</button>}
-                {cn.id!==null&&(
-                  <div style={{ flexShrink:0,paddingRight:4,display:'flex',alignItems:'center',gap:2 }} onClick={e=>e.stopPropagation()}>
-                    <button title={concepts.find(c=>c.id===cn.id)?.status==='completed'?'Mark in progress':'Mark complete'} onClick={()=>{const cur=concepts.find(c=>c.id===cn.id);markConceptStatus(cn.id,cur?.status==='completed'?'in_progress':'completed');}} style={{ background:'transparent',border:'none',cursor:'pointer',padding:'2px 4px',color:concepts.find(c=>c.id===cn.id)?.status==='completed'?'var(--accent)':'var(--txt3)',fontSize:13,lineHeight:1,borderRadius:4 }}>
-                      {concepts.find(c=>c.id===cn.id)?.status==='completed'?<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/></svg>}
-                    </button>
-                    <DropdownMenu trigger={<button style={{ background:'transparent',border:'none',color:'var(--txt3)',cursor:'pointer',padding:'2px 5px',fontSize:13,borderRadius:4,lineHeight:1 }}>⋮</button>} items={[{label:'Edit title',onClick:()=>setEditingCnId(cn.id)},{label:'Delete',danger:true,onClick:()=>deleteConcept(cn.id)}]}/>
-                  </div>
-                )}
+            {/* All-topics row (no serial, no drag) */}
+            {(()=>{const cn={id:null,title:`All — ${currentTopic.title.slice(0,18)}`};return(
+              <div style={{ display:'flex',alignItems:'center',borderRadius:6,background:activeCn===null?'var(--accent-dim)':'transparent',border:`1px solid ${activeCn===null?'var(--accent-border)':'transparent'}`,transition:'background 120ms' }}>
+                <button onClick={()=>{setActiveCn(null);loadConceptNote(null);}} style={{ flex:1,textAlign:'left',background:'transparent',border:'none',padding:'7px 10px',cursor:'pointer',color:'var(--txt2)',fontSize:12.5,fontWeight:600,fontFamily:'var(--font)' }}>{cn.title}</button>
               </div>
-            ))}
+            );})()}
+            {/* Draggable concept rows */}
+            <Reorderable
+              items={concepts.filter(cn=>!cnSearch.trim()||cn.title.toLowerCase().includes(cnSearch.toLowerCase()))}
+              itemKey={cn=>cn.id}
+              colKey="concepts"
+              onReorder={async(reordered)=>{
+                // merge reordered back into full concepts list preserving non-visible items
+                const ids=new Set(reordered.map(c=>c.id));
+                const others=concepts.filter(c=>!ids.has(c.id));
+                await patchTopic(reorder([...reordered,...others]));
+              }}
+              renderItem={cn=>{
+                const conceptIdx=concepts.findIndex(c=>c.id===cn.id);
+                const serialNum=(concepts[conceptIdx]?.order??conceptIdx)+1;
+                return(
+                  <div style={{ display:'flex',alignItems:'center',borderRadius:6,background:activeCn===cn.id?'var(--accent-dim)':'transparent',border:`1px solid ${activeCn===cn.id?'var(--accent-border)':'transparent'}`,transition:'background 120ms' }}>
+                    {editingCnId===cn.id
+                      ?<input ref={editInputRef} defaultValue={cn.title} onBlur={e=>renameConcept(cn.id,e.target.value.trim()||cn.title)} onKeyDown={e=>{if(e.key==='Enter')renameConcept(cn.id,e.target.value.trim()||cn.title);if(e.key==='Escape')setEditingCnId(null);}} style={{ flex:1,fontSize:12.5,padding:'6px 10px',background:'var(--surface2)',border:'1px solid var(--accent-border)',borderRadius:5,color:'var(--txt)',fontFamily:'var(--font)',outline:'none' }} onClick={e=>e.stopPropagation()}/>
+                      :<button onClick={()=>{setActiveCn(cn.id);loadConceptNote(cn.id);}} style={{ flex:1,textAlign:'left',background:'transparent',border:'none',padding:'7px 10px',cursor:'pointer',color:'var(--txt2)',fontSize:12.5,fontWeight:500,fontFamily:'var(--font)',display:'flex',alignItems:'baseline',gap:5 }}>
+                        <span style={{ fontSize:10,fontWeight:700,color:'var(--txt3)',opacity:.6,minWidth:16,flexShrink:0 }}>{serialNum}.</span>
+                        <span>{cn.title}</span>
+                      </button>}
+                    <div style={{ flexShrink:0,paddingRight:4,display:'flex',alignItems:'center',gap:2 }} onClick={e=>e.stopPropagation()}>
+                      <button title={cn.status==='completed'?'Mark in progress':'Mark complete'} onClick={()=>markConceptStatus(cn.id,cn.status==='completed'?'in_progress':'completed')} style={{ background:'transparent',border:'none',cursor:'pointer',padding:'2px 4px',color:cn.status==='completed'?'var(--accent)':'var(--txt3)',fontSize:13,lineHeight:1,borderRadius:4 }}>
+                        {cn.status==='completed'?<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="9"/></svg>}
+                      </button>
+                      <DropdownMenu trigger={<button style={{ background:'transparent',border:'none',color:'var(--txt3)',cursor:'pointer',padding:'2px 5px',fontSize:13,borderRadius:4,lineHeight:1 }}>⋮</button>} items={[{label:'Edit title',onClick:()=>setEditingCnId(cn.id)},{label:'Delete',danger:true,onClick:()=>deleteConcept(cn.id)}]}/>
+                    </div>
+                  </div>
+                );
+              }}
+            />
           </div>
         </div>
         {/* Main content */}

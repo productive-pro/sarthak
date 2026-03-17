@@ -1,5 +1,5 @@
 """
-Vision agent — snapshot analysis with optional web search, shell, and ActivityWatch context.
+Vision agent — snapshot analysis with optional web search and shell context.
 
 Specialist sub-agent called via delegation from the orchestrator.
 Uses duckduckgo_search_tool() as a built-in rather than manual httpx.

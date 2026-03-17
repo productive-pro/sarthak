@@ -1,0 +1,19 @@
+id: list_skills_tool
+description: List all saved skills
+module: sarthak.features.ai.skills
+function: tool_list_skills
+---
+id: read_skill_tool
+description: Read full content of a skill
+module: sarthak.features.ai.skills
+function: tool_read_skill
+---
+id: save_skill_tool
+description: Save a new skill
+module: sarthak.features.ai.skills
+function: tool_save_skill
+---
+id: delete_skill_tool
+description: Delete a skill by name
+module: sarthak.features.ai.skills
+function: tool_delete_skill

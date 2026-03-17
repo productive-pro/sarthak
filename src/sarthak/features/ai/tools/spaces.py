@@ -250,3 +250,105 @@ def tool_spaces_list() -> str:
         return "\n".join(lines)
     except Exception as exc:
         return f"Spaces list failed: {exc}"
+
+
+# ── Hierarchical context (Strategy: read main first, dig only when needed) ────
+
+# Keywords that signal the user wants SRS / streak / schedule data (HEARTBEAT)
+_HEARTBEAT_KEYWORDS = frozenset({
+    "srs", "spaced repetition", "review", "cards", "due", "streak",
+    "schedule", "remind", "overdue", "next review",
+})
+
+
+async def tool_spaces_context_hierarchical(
+    space_dir: str = "",
+    question_hint: str = "",
+) -> str:
+    """
+    Hierarchical context loader — the "read main first, dig if needed" pattern.
+
+    Default (most questions): loads SOUL + MEMORY only (~600 chars, fast).
+    If question_hint contains SRS/streak/cards keywords: also loads HEARTBEAT.
+
+    This means a simple "what should I learn next?" never pays the token cost
+    of loading SRS due-card lists, streak data, etc.
+    """
+    from sarthak.spaces.store import get_space_context
+    from sarthak.spaces.memory import read_context_block_async
+
+    ws_dir = Path(space_dir).resolve() if space_dir else None
+    if ws_dir is None:
+        try:
+            ws_dir = Path.cwd()
+        except Exception:
+            return "No active space."
+
+    # Decide whether to include HEARTBEAT based on keyword scan
+    q_lower = question_hint.lower()
+    include_heartbeat = any(kw in q_lower for kw in _HEARTBEAT_KEYWORDS)
+
+    try:
+        space_ctx, memory_ctx = await asyncio.gather(
+            asyncio.to_thread(get_space_context, ws_dir),
+            read_context_block_async(ws_dir, include_heartbeat=include_heartbeat, max_chars=900),
+            return_exceptions=True,
+        )
+        parts = []
+        if isinstance(space_ctx, str) and space_ctx.strip():
+            parts.append(space_ctx.strip())
+        if isinstance(memory_ctx, str) and memory_ctx.strip():
+            parts.append(memory_ctx.strip())
+        return "\n\n---\n".join(parts) if parts else "No active space."
+    except Exception as exc:
+        return f"Space context failed: {exc}"
+
+
+# ── Strategy 3: isolated spaces_session ──────────────────────────────────────
+
+async def tool_spaces_session_isolated(
+    space_dir: str = "",
+    space_type: str = "data_science",
+) -> str:
+    """
+    Run a full learning session in a completely isolated execution context.
+
+    The session's full transcript is never returned to the orchestrator.
+    Only a compact summary (≤400 chars) is returned, keeping the orchestrator
+    context window tight across multi-turn conversations.
+    """
+    from sarthak.spaces.orchestrator import SpacesOrchestrator
+    from sarthak.spaces.models import SpaceType
+    try:
+        ws_dir = Path(space_dir).resolve() if space_dir else Path.cwd()
+        orch = SpacesOrchestrator(ws_dir)
+        try:
+            st = SpaceType(space_type)
+        except ValueError:
+            st = SpaceType.DATA_SCIENCE
+
+        # Run session fully in its own thread + event loop (Strategy 3)
+        # asyncio.get_running_loop() preferred over deprecated get_event_loop()
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            _EXECUTOR,
+            lambda: asyncio.run(orch.next_session(space_type=st)),
+        )
+        # Return only the compact summary, not the full reply
+        reply = result.reply or ""
+        if len(reply) <= 400:
+            return reply
+        # Truncate to first meaningful block (concept + first explanation para)
+        lines = reply.split("\n")
+        summary_lines = []
+        char_count = 0
+        for line in lines:
+            if char_count + len(line) > 380:
+                summary_lines.append("…(session continues)")
+                break
+            summary_lines.append(line)
+            char_count += len(line)
+        return "\n".join(summary_lines)
+    except Exception as exc:
+        log.warning("tool_spaces_session_isolated_failed", error=str(exc))
+        return f"Spaces session failed: {exc}"

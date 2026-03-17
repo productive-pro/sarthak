@@ -1,0 +1,19 @@
+id: spaces_rag_index
+description: Index or re-index workspace files for RAG semantic search
+module: sarthak.features.ai.tools.workspace
+function: tool_spaces_rag_index
+---
+id: spaces_rag_search
+description: Semantic search over indexed workspace files
+module: sarthak.features.ai.tools.workspace
+function: tool_spaces_rag_search
+---
+id: workspace_qa
+description: Answer questions about workspace data, sessions, SRS cards, etc.
+module: sarthak.features.ai.tools.workspace
+function: tool_workspace_qa
+---
+id: workspace_analyse
+description: Force-refresh workspace analysis (Optimal_Learn.md)
+module: sarthak.features.ai.tools.workspace
+function: tool_workspace_analyse

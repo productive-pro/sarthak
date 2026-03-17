@@ -113,7 +113,15 @@ async def _open_conn(db_path: str) -> aiosqlite.Connection:
 _INIT_DONE: set[str] = set()
 # Per-DB connection pool: normalised path → (conn, asyncio.Lock)
 _CONN_POOL: dict[str, tuple[aiosqlite.Connection, asyncio.Lock]] = {}
-_POOL_LOCK = asyncio.Lock()
+_POOL_LOCK: asyncio.Lock | None = None  # lazy — created on first use inside event loop
+
+
+def _get_pool_lock() -> asyncio.Lock:
+    """Return the global pool lock, creating it lazily inside the running event loop."""
+    global _POOL_LOCK
+    if _POOL_LOCK is None:
+        _POOL_LOCK = asyncio.Lock()
+    return _POOL_LOCK
 
 
 class RoadmapDB:
@@ -127,7 +135,7 @@ class RoadmapDB:
 
     async def _ensure_conn(self) -> tuple[aiosqlite.Connection, asyncio.Lock]:
         """Create connection + write lock if missing, without running init()."""
-        async with _POOL_LOCK:
+        async with _get_pool_lock():
             if self._key not in _CONN_POOL:
                 conn = await _open_conn(self._key)
                 _CONN_POOL[self._key] = (conn, asyncio.Lock())

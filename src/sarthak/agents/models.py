@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,48 +32,67 @@ class AgentTool(str, Enum):
     WEB_SEARCH  = "web_search"
     SHELL       = "shell"
     FILE_READ   = "file_read"
-    FILE_WRITE  = "file_write"   # write inside declared write_roots only
-    HTTP_FETCH  = "http_fetch"   # single URL fetch — narrower than full web search
+    FILE_WRITE  = "file_write"
+    HTTP_FETCH  = "http_fetch"
+
+
+# ── Model tier ────────────────────────────────────────────────────────────────
+ModelTier = Literal["fast", "balanced", "powerful"]
+"""
+fast     → low-latency, low-cost  (haiku / gpt-4o-mini / gemini-flash)
+balanced → default quality        (sonnet / gpt-4o)             [DEFAULT]
+powerful → deep-reasoning tasks   (opus / gpt-4o)
+
+Resolved in multi_provider.py via FAST_MODELS / DEFAULT_MODELS / LATEST_MODELS.
+"""
 
 
 class SandboxPolicy(BaseModel):
-    """
-    Optional per-agent overrides for sandbox resource limits and capability flags.
-
-    When absent, defaults from SandboxConfig (config.py) apply.
-    Capability overrides (allow_web, allow_shell) let you create e.g. a
-    web-search agent that runs sandboxed with web disabled for testing.
-    """
-    wall_timeout:  int | None  = None   # seconds; overrides default per-scope timeout
-    memory_cap:    int | None  = None   # bytes
-    cpu_seconds:   int | None  = None   # subprocess CPU cap (POSIX only)
-    output_cap:    int | None  = None   # characters saved to AgentRun.output
-    max_web_calls: int | None  = None   # per-run web search call limit
-    # capability overrides — None means "derive from AgentSpec.tools" (default)
+    """Per-agent overrides for sandbox resource limits and capability flags."""
+    wall_timeout:  int | None  = None
+    memory_cap:    int | None  = None
+    cpu_seconds:   int | None  = None
+    output_cap:    int | None  = None
+    max_web_calls: int | None  = None
     allow_web:   bool | None = None
     allow_shell: bool | None = None
 
 
 class AgentSpec(BaseModel):
     """Persistent definition of a custom agent."""
-    agent_id: str                                  # slug, e.g. "daily-digest"
-    name: str                                      # human display name
-    description: str = ""                          # what this agent does
-    prompt: str                                    # the task/instruction template
-    schedule: str                                  # cron expression, e.g. "0 8 * * *"
+    agent_id: str
+    name: str
+    description: str = ""
+    prompt: str
+    schedule: str
     tools: list[AgentTool] = Field(default_factory=list)
     scope: AgentScope = AgentScope.GLOBAL
-    space_dir: str = ""                            # set when scope == SPACE
-    context_space_dirs: list[str] = Field(default_factory=list)  # extra spaces for context injection
-    notify_telegram: bool = False                  # push result to Telegram if configured
-    notify_whatsapp: bool = False                  # push result to WhatsApp if configured
+    space_dir: str = ""
+    context_space_dirs: list[str] = Field(default_factory=list)
+    notify_telegram: bool = False
+    notify_whatsapp: bool = False
     enabled: bool = True
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
     last_run_at: str = ""
-    next_run_at: str = ""                          # ISO-8601, computed from schedule
-    extra: dict[str, Any] = Field(default_factory=dict)  # free-form metadata from creator
-    sandbox: SandboxPolicy = Field(default_factory=SandboxPolicy)  # resource overrides
+    next_run_at: str = ""
+    extra: dict[str, Any] = Field(default_factory=dict)
+    sandbox: SandboxPolicy = Field(default_factory=SandboxPolicy)
+
+    # ── Strategy: model tier ───────────────────────────────────────────────
+    model_tier: ModelTier = "balanced"
+    """
+    fast     → srs-push, recommendations  (latency + cost sensitive)
+    balanced → daily-digest, orchestrator (default)
+    powerful → weekly-digest, deep analysis (quality-first)
+    """
+
+    # ── Strategy: persistent agent memory ─────────────────────────────────
+    enable_memory: bool = False
+    """
+    When True the agent reads the last N run summaries from its memory dir
+    before each run, and writes a brief note after each successful run.
+    """
 
 
 class AgentPatch(BaseModel):
@@ -85,6 +104,8 @@ class AgentPatch(BaseModel):
     notify_telegram: bool | None = None
     notify_whatsapp: bool | None = None
     enabled: bool | None = None
+    model_tier: ModelTier | None = None
+    enable_memory: bool | None = None
     extra: dict[str, Any] | None = None
 
 
@@ -95,6 +116,7 @@ class AgentRun(BaseModel):
     started_at: str = Field(default_factory=_now)
     finished_at: str = ""
     success: bool = False
-    output: str = ""                               # markdown / plain text result
+    output: str = ""
     error: str = ""
     tools_used: list[str] = Field(default_factory=list)
+    model_tier_used: ModelTier = "balanced"

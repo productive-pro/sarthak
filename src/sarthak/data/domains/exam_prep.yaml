@@ -1,0 +1,44 @@
+# Domain: Exam Preparation
+
+concept_tree:
+  novice:
+    - "Exam pattern analysis: syllabus, question types, marking scheme"
+    - "Building a study schedule using spaced repetition"
+    - "Active recall techniques: the Feynman method, practice tests"
+    - "Note-taking systems: Cornell method, concept mapping"
+  beginner:
+    - "Core subject fundamentals (domain-specific — filled by AI)"
+    - "Previous year question pattern analysis"
+    - "Time management: timed practice with error logging"
+    - "Weak area identification and targeted drilling"
+  intermediate:
+    - "Full-length mock tests with deep post-analysis"
+    - "Error taxonomy: conceptual vs careless vs time-pressure mistakes"
+    - "Speed + accuracy balance: subject-specific pacing strategy"
+    - "Cross-topic integration problems"
+  advanced:
+    - "Advanced problem-solving patterns from high-difficulty questions"
+    - "Peak performance under pressure: cognitive load management"
+  expert:
+    - "Teaching concepts to cement understanding (Feynman final stage)"
+    - "Contributing high-quality solutions to study communities"
+
+tools:
+  - name: anki
+    purpose: "Spaced repetition flashcards"
+    install_linux: "sudo apt install anki"
+    install_mac: "brew install --cask anki"
+    install_windows: "winget install Anki.Anki"
+    url: "https://apps.ankiweb.net/"
+    why_experts_use_it: "Most evidence-backed memorization tool — SM-2 algorithm"
+    category: core
+  - name: obsidian
+    purpose: "Connected knowledge base"
+    install_linux: "snap install obsidian --classic"
+    install_mac: "brew install --cask obsidian"
+    install_windows: "winget install Obsidian.Obsidian"
+    url: "https://obsidian.md/"
+    why_experts_use_it: "Build a knowledge graph; see relationships between concepts"
+    category: core
+
+projects: []

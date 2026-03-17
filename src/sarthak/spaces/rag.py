@@ -38,18 +38,37 @@ log = structlog.get_logger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
+# All extensions MarkItDown handles natively (+ audio + images with LLM)
 _ALL_EXTS = {
+    # Documents
     ".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
-    ".html", ".htm", ".epub", ".zip",
-    ".txt", ".md", ".rst", ".py", ".js", ".ts", ".json", ".toml", ".yaml",
-    ".yml", ".csv", ".xml", ".sh", ".r", ".ipynb", ".tex",
+    ".epub", ".msg", ".eml", ".rtf",
+    # Web / data
+    ".html", ".htm", ".xml", ".csv", ".json", ".yaml", ".yml", ".toml",
+    # Plain text / code
+    ".txt", ".md", ".rst", ".tex",
+    ".py", ".js", ".ts", ".sh", ".r",
+    # Notebooks
+    ".ipynb",
+    # Archives (MarkItDown recurses into contents)
+    ".zip",
+    # Images (described by LLM when llm_client is set)
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif",
+    # Audio (transcribed via SpeechRecognition)
+    ".mp3", ".wav", ".m4a", ".ogg", ".flac",
 }
 _SKIP_DIRS = {".sarthak_rag", ".spaces", ".git", "__pycache__", "node_modules", ".venv"}
+# Extensions where MarkItDown adds real structure over raw read_text:
+# ipynb → code + outputs formatted; csv → table; json → pretty; xml → structured
+_MARKITDOWN_PREFERRED = {".ipynb", ".csv", ".xml", ".html", ".htm", ".epub",
+                          ".msg", ".eml", ".rtf", ".zip"}
+# Fast-path: read directly (MarkItDown would just pass these through anyway)
 _PLAINTEXT_EXTS = {
     ".txt", ".md", ".rst", ".py", ".js", ".ts", ".toml", ".yaml",
-    ".yml", ".sh", ".r", ".tex", ".xml", ".json", ".csv", ".ipynb",
+    ".yml", ".sh", ".r", ".tex", ".json",
 }
 _VISION_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+_AUDIO_EXTS  = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
 _SKIP_FILES_IN_SPACES = {
     "sessions.jsonl", "tests.jsonl", "test_results.jsonl",
     "notes_index.jsonl", "mtimes.json", "sarthak.vec", "sarthak.db",
@@ -276,90 +295,123 @@ def _chunk(text: str, path: str) -> list[dict[str, Any]]:
 
 # ── Text extraction ────────────────────────────────────────────────────────────
 
-_markitdown: Any = None
-_markitdown_vision: Any = None
+# ── MarkItDown singleton — one instance handles all formats ───────────────────
+# A second LLM-enabled instance is created lazily when image/vision pipeline
+# is requested (used for image descriptions and audio transcription).
+
+_md_plain:  Any = None   # no LLM — documents, PDFs, DOCX, XLSX, etc.
+_md_vision: Any = None   # with LLM client — images + OCR-enhanced PDFs
 
 
-def _get_markitdown(vision: bool = False) -> Any:
-    global _markitdown, _markitdown_vision
+def _get_md(vision: bool = False) -> Any:
+    """Return a cached MarkItDown instance. Vision instance carries llm_client."""
+    global _md_plain, _md_vision
     if vision:
-        if _markitdown_vision is None:
+        if _md_vision is None:
             from markitdown import MarkItDown
             try:
                 from sarthak.core.ai_utils.multi_provider import build_openai_client
                 llm_client, llm_model = build_openai_client()
-                _markitdown_vision = MarkItDown(llm_client=llm_client, llm_model=llm_model)
+                _md_vision = MarkItDown(llm_client=llm_client, llm_model=llm_model)
+                log.debug("markitdown_vision_init", model=llm_model)
             except Exception:
-                from markitdown import MarkItDown as _MD
-                _markitdown_vision = _MD()
-        return _markitdown_vision
-    if _markitdown is None:
+                _md_vision = MarkItDown()   # graceful fallback: no LLM descriptions
+        return _md_vision
+    if _md_plain is None:
         from markitdown import MarkItDown
-        _markitdown = MarkItDown()
-    return _markitdown
+        _md_plain = MarkItDown()
+    return _md_plain
 
 
-def _extract_pdf(p: Path) -> str | None:
-    """Extract PDF text preserving structure via pdfminer.six."""
+def _md_to_text(result: Any) -> str:
+    """Extract plain text from a MarkItDown result (supports v0.0.x and v0.1.x)."""
+    return (
+        getattr(result, "markdown", None)
+        or getattr(result, "text_content", None)
+        or ""
+    ).strip()
+
+
+def _convert(p: Path, vision: bool = False) -> str | None:
+    """Run MarkItDown on a local file and return text, or None on failure."""
     try:
-        from pdfminer.high_level import extract_text as _pdfminer_extract
-        text = _pdfminer_extract(str(p)).strip()
-        return text or None
+        result = _get_md(vision=vision).convert(p)
+        return _md_to_text(result) or None
+    except Exception as exc:
+        log.warning("rag_markitdown_failed", file=p.name, error=str(exc))
+        return None
+
+
+def _extract_pdf_ocr(p: Path) -> str | None:
+    """Tesseract OCR fallback for scanned/image-only PDFs.
+
+    Only reached when MarkItDown's own PDF converter extracts zero text
+    (i.e. the PDF has no text layer at all).  Requires:
+        pip install pytesseract pdf2image
+    and Tesseract installed on the system.
+    """
+    try:
+        from pdf2image import convert_from_path  # type: ignore
+        import pytesseract                        # type: ignore
     except ImportError:
-        pass
-    except Exception as exc:
-        log.debug("rag_pdf_pdfminer_failed", file=str(p), error=str(exc))
-    # Fallback: MarkItDown
-    return _extract_via_markitdown(p)
-
-
-def _extract_via_markitdown(p: Path) -> str | None:
+        log.debug("rag_pdf_ocr_unavailable", hint="pip install pytesseract pdf2image")
+        return None
     try:
-        md = _get_markitdown(vision=False)
-        result = md.convert(str(p))
-        # Support both MarkItDown API versions
-        text = (
-            getattr(result, "markdown", None)
-            or getattr(result, "text_content", None)
-            or ""
-        ).strip()
+        log.info("rag_pdf_ocr_start", file=p.name)
+        pages = convert_from_path(str(p), dpi=200)
+        parts = [
+            f"--- Page {i + 1} ---\n{pytesseract.image_to_string(img, lang='eng').strip()}"
+            for i, img in enumerate(pages)
+            if pytesseract.image_to_string(img, lang='eng').strip()
+        ]
+        text = "\n\n".join(parts).strip()
+        if text:
+            log.info("rag_pdf_ocr_done", file=p.name, pages=len(pages), chars=len(text))
         return text or None
     except Exception as exc:
-        log.warning("rag_markitdown_failed", file=str(p), error=str(exc))
+        log.warning("rag_pdf_ocr_failed", file=str(p), error=str(exc))
         return None
 
 
 def _extract_text(p: Path, pipeline: str = "text") -> str | None:
     """
-    Universal file → text extractor.
+    Universal file → markdown/text extractor.
 
-    Strategy:
-    - Plain text/code: read directly (fast, no codec issues)
-    - PDF: pdfminer.six for structure-preserving extraction, MarkItDown fallback
-    - Everything else: MarkItDown (excellent for DOCX, PPTX, XLSX, HTML, EPUB, ZIP)
-    - Vision pipeline: use MarkItDown with LLM hint for images
+    Decision tree (fast → rich):
+    1. Plain code/prose (.py .md .txt etc.)  → read_text() directly (fastest)
+    2. MarkItDown-preferred formats          → MarkItDown (ipynb, csv, html, epub…)
+    3. Office docs (.docx .pptx .xlsx .xls)  → MarkItDown
+    4. PDF                                   → MarkItDown → pytesseract OCR fallback
+    5. Images (vision pipeline)              → MarkItDown with LLM description
+    6. Audio                                 → MarkItDown (SpeechRecognition transcription)
+    7. Everything else                       → MarkItDown (handles ZIP, MSG, RTF…)
     """
     try:
-        if p.suffix.lower() in _PLAINTEXT_EXTS:
+        ext = p.suffix.lower()
+
+        # 1. Fast-path: plain text / source code — MarkItDown just passes these through
+        if ext in _PLAINTEXT_EXTS:
             return p.read_text(encoding="utf-8", errors="replace").strip() or None
 
-        if p.suffix.lower() == ".pdf":
-            return _extract_pdf(p)
+        # 2 & 3. MarkItDown-preferred + all Office formats
+        if ext in _MARKITDOWN_PREFERRED or ext in {
+            ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls"
+        }:
+            return _convert(p)
 
-        if pipeline == "vision" and p.suffix.lower() in _VISION_EXTS:
-            try:
-                md = _get_markitdown(vision=True)
-                result = md.convert(str(p))
-                text = (
-                    getattr(result, "markdown", None)
-                    or getattr(result, "text_content", None)
-                    or ""
-                ).strip()
-                return text or None
-            except Exception:
-                pass  # fall through to standard MarkItDown
+        # 4. PDF: MarkItDown first (handles text-layer PDFs well),
+        #    then tesseract for scanned/image-only PDFs
+        if ext == ".pdf":
+            text = _convert(p)
+            return text if text else _extract_pdf_ocr(p)
 
-        return _extract_via_markitdown(p)
+        # 5. Images: use LLM-enabled instance for descriptions
+        if ext in _VISION_EXTS:
+            use_vision = (pipeline == "vision")
+            return _convert(p, vision=use_vision)
+
+        # 6 & 7. Audio + anything else (ZIP, RTF, MSG…)
+        return _convert(p)
 
     except ImportError:
         raise
@@ -583,6 +635,9 @@ async def index_space(directory: Path, incremental: bool = True) -> int:
         mtime = path.stat().st_mtime
         if incremental and stored_mtimes.get(rel) == mtime:
             continue
+        # Delete stale chunks before re-indexing so ghost chunks don't persist
+        if stored_mtimes.get(rel) is not None:
+            await _delete_source_via_repo(directory, rel)
         all_chunks.extend(await asyncio.to_thread(_chunk, text, rel))
         new_mtimes[rel] = mtime
 

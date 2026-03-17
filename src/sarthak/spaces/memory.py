@@ -288,7 +288,7 @@ async def distill_memory(space_dir: Path, profile: "SpaceProfile") -> None:
         return
 
     contents = await asyncio.gather(*[
-        asyncio.to_thread(lambda p: p.read_text(encoding="utf-8"), f) for f in log_files
+        asyncio.to_thread(lambda p=f: p.read_text(encoding="utf-8")) for f in log_files
     ])
     existing = mem_md.read_text(encoding="utf-8") if mem_md.exists() else ""
 

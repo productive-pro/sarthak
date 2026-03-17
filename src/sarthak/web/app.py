@@ -27,6 +27,7 @@ from sarthak.core.logging import get_logger
 from sarthak.web.routers import (
     REACT_DIST,
     activity_router,
+    ag_ui_router,
     agents_router,
     chat_router,
     config_router,
@@ -87,6 +88,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(dashboard_router)
 app.include_router(chat_router)
+app.include_router(ag_ui_router)
 app.include_router(config_router)
 app.include_router(spaces_router)
 app.include_router(spaces_rag_router)

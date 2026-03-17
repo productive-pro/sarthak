@@ -242,13 +242,36 @@ async def update_space_settings(space_id: str, body: SpaceSettingsUpdate) -> dic
 @router.get("/api/spaces/{space_id}/overview")
 async def get_space_overview(space_id: str) -> dict:
     match = get_space_or_404(space_id)
-    overview_path = Path(match["directory"]) / ".spaces" / "overview.json"
-    if overview_path.exists():
+    spaces_dir = Path(match["directory"]) / ".spaces"
+    status_path = spaces_dir / "roadmap_status.json"
+    status = "pending"
+    if status_path.exists():
         try:
-            return json.loads(overview_path.read_text(encoding="utf-8"))
+            status = json.loads(status_path.read_text(encoding="utf-8")).get("status", "pending")
         except Exception:
             pass
-    return {}
+    overview_path = spaces_dir / "overview.json"
+    if overview_path.exists():
+        try:
+            data = json.loads(overview_path.read_text(encoding="utf-8"))
+            data["roadmap_status"] = status
+            return data
+        except Exception:
+            pass
+    return {"roadmap_status": status}
+
+
+@router.get("/api/spaces/{space_id}/roadmap-status")
+async def get_roadmap_status(space_id: str) -> dict:
+    """Lightweight endpoint to poll roadmap generation status without waiting for overview."""
+    match = get_space_or_404(space_id)
+    status_path = Path(match["directory"]) / ".spaces" / "roadmap_status.json"
+    if status_path.exists():
+        try:
+            return json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"status": "pending", "error": ""}
 
 
 # ── Optimize endpoint ─────────────────────────────────────────────────────────

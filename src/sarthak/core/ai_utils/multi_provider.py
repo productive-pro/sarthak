@@ -684,3 +684,49 @@ def build_openai_client() -> tuple[Any, str]:
         raise ConfigurationError("Vision LLM not configured. Set [ai.openai] api_key in config.toml.")
     client = openai.OpenAI(api_key=api_key, base_url=base_url) if base_url else openai.OpenAI(api_key=api_key)
     return client, model
+
+
+# ── Model tier resolution ─────────────────────────────────────────────────────
+
+def resolve_model_for_tier(
+    provider: str,
+    tier: "str",  # ModelTier = "fast" | "balanced" | "powerful"
+    cfg: dict[str, Any] | None = None,
+) -> str:
+    """
+    Return the correct model name for a given quality/speed tier.
+
+    Resolution order:
+      1. config.toml [ai.<provider>.fast_model / balanced_model / powerful_model]
+      2. Hard-coded tier tables (FAST_MODELS / DEFAULT_MODELS / LATEST_MODELS)
+
+    Strategy 2 — Model Routing by Task Complexity.
+    """
+    if cfg is None:
+        from sarthak.core.config import load_config
+        cfg = load_config()
+    p = Provider.from_str(provider)
+    ai = cfg.get("ai", {})
+    section_key = _CONFIG_KEYS.get(p, p.value)
+    provider_cfg = ai.get(section_key, {})
+    if not isinstance(provider_cfg, dict):
+        provider_cfg = {}
+
+    tier_key_map = {
+        "fast":     "fast_model",
+        "balanced": "text_model",
+        "powerful": "powerful_model",
+    }
+    cfg_key = tier_key_map.get(tier, "text_model")
+    from_cfg = provider_cfg.get(cfg_key, "").strip()
+    if from_cfg:
+        return from_cfg
+
+    table_map = {
+        "fast":     FAST_MODELS,
+        "balanced": DEFAULT_MODELS,
+        "powerful": LATEST_MODELS,
+    }
+    table = table_map.get(tier, DEFAULT_MODELS)
+    return table.get(p, DEFAULT_MODELS.get(p, ""))
+

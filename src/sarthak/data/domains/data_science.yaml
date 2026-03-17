@@ -1,0 +1,143 @@
+# Domain: Data Science & AI Engineering
+# concept_tree keys must match SkillLevel enum values: novice, beginner, intermediate, advanced, expert
+
+concept_tree:
+  novice:
+    - "Python basics: lists, dicts, functions, comprehensions"
+    - "NumPy arrays and vectorized math"
+    - "Pandas: DataFrames, groupby, merge"
+    - "Matplotlib & Seaborn: visualizing distributions and relationships"
+    - "Statistics: mean, variance, standard deviation, distributions"
+    - "Probability: events, Bayes theorem, conditional probability"
+  beginner:
+    - "Linear algebra: vectors, dot product, matrix multiplication"
+    - "Calculus: derivatives, chain rule, gradient intuition"
+    - "Supervised learning: regression vs classification"
+    - "Train/test split, cross-validation, overfitting/underfitting"
+    - "scikit-learn: pipelines, fit/transform/predict pattern"
+    - "Loss functions: MSE and cross-entropy — derived from first principles"
+  intermediate:
+    - "Gradient descent: batch, SGD, mini-batch — full derivation"
+    - "Regularization: L1/L2 geometry in weight space"
+    - "Decision trees and random forests: information gain, Gini impurity"
+    - "SVMs: maximum margin, kernel trick"
+    - "PCA: derivation via SVD, variance explained"
+    - "Neural networks: forward pass + backpropagation in NumPy from scratch"
+    - "SQL + DuckDB for analytical queries on large data"
+    - "Experiment tracking: MLflow runs, metrics, artifact logging"
+  advanced:
+    - "CNNs, RNNs, attention mechanism — math to code"
+    - "Transformers: self-attention derivation, positional encoding"
+    - "Optimization: Adam, AdamW, cosine LR schedules"
+    - "MLOps: model serving, versioning, drift detection"
+    - "LLMs: fine-tuning, LoRA, RLHF fundamentals"
+    - "Bayesian methods: MCMC, variational inference"
+    - "Time series: ARIMA, Prophet, neural forecasting"
+    - "Feature stores and online/offline serving architecture"
+  expert:
+    - "Custom CUDA kernels with Triton"
+    - "Causal inference: do-calculus, instrumental variables"
+    - "Reinforcement learning: policy gradients, PPO derivation"
+    - "Research replication: reading and implementing NeurIPS/ICML papers"
+    - "Production ML systems: real-time features, shadow deployment, canary"
+
+tools:
+  - name: uv
+    purpose: "Fast Python package manager"
+    install_linux: "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    install_mac: "curl -LsSf https://astral.sh/uv/install.sh | sh"
+    install_windows: "powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\""
+    url: "https://docs.astral.sh/uv/"
+    why_experts_use_it: "100x faster installs; lockfiles; replaces pip+venv+conda"
+    category: core
+  - name: marimo
+    purpose: "Reactive notebook (git-friendly)"
+    install_linux: "uv add marimo"
+    url: "https://marimo.io/"
+    why_experts_use_it: "Notebooks as pure Python; reactive; no hidden state"
+    category: core
+  - name: polars
+    purpose: "Lightning-fast DataFrames"
+    install_linux: "uv add polars"
+    url: "https://docs.pola.rs/"
+    why_experts_use_it: "10-50x faster than pandas; lazy evaluation; expressive API"
+    category: speed
+  - name: duckdb
+    purpose: "In-process analytical SQL"
+    install_linux: "uv add duckdb"
+    url: "https://duckdb.org/"
+    why_experts_use_it: "Query CSV/Parquet/Arrow in-place; no server; faster than pandas"
+    category: speed
+  - name: ruff
+    purpose: "Linter + formatter (all-in-one)"
+    install_linux: "uv add --dev ruff"
+    why_experts_use_it: "Replaces flake8+black+isort; 100x faster"
+    category: core
+  - name: mlflow
+    purpose: "Experiment tracking + model registry"
+    install_linux: "uv add mlflow"
+    url: "https://mlflow.org/"
+    why_experts_use_it: "Track every run; compare experiments; register + serve models"
+    category: mlops
+  - name: scikit-learn
+    purpose: "Classical ML algorithms"
+    install_linux: "uv add scikit-learn"
+    why_experts_use_it: "Production-ready pipelines; consistent API; battle-tested"
+    category: core
+  - name: pytorch
+    purpose: "Deep learning framework"
+    install_linux: "uv add torch torchvision"
+    url: "https://pytorch.org/"
+    why_experts_use_it: "Industry standard; dynamic graphs; massive ecosystem"
+    category: core
+  - name: hypothesis
+    purpose: "Property-based testing"
+    install_linux: "uv add --dev hypothesis"
+    why_experts_use_it: "Generates edge cases automatically; catches silent data bugs"
+    category: testing
+  - name: rich
+    purpose: "Beautiful terminal output"
+    install_linux: "uv add rich"
+    url: "https://rich.readthedocs.io/"
+    why_experts_use_it: "Expert DSs use rich for readable debugging + progress bars"
+    category: core
+  - name: dvc
+    purpose: "Data + model version control"
+    install_linux: "uv add dvc"
+    url: "https://dvc.org/"
+    why_experts_use_it: "Git for large files; reproducible pipelines; team collaboration"
+    category: mlops
+
+projects:
+  - id: titanic_survival
+    title: "Titanic Survival Predictor"
+    level: beginner
+    concepts:
+      - "Pandas: DataFrames"
+      - "scikit-learn: pipelines"
+    hook: "Your first end-to-end ML pipeline — the classic beginner project that every DS has done"
+    description: "Load, clean, engineer features, train and evaluate a classifier"
+  - id: house_price_regression
+    title: "House Price Prediction Engine"
+    level: intermediate
+    concepts:
+      - "Gradient descent: batch, SGD"
+      - "Regularization: L1/L2"
+    hook: "Build a model Zillow-like companies use in production"
+    description: "Feature engineering, cross-validation, stacking, SHAP explanations"
+  - id: image_classifier
+    title: "Custom Image Classifier"
+    level: advanced
+    concepts:
+      - "CNNs"
+      - "Transformers: self-attention"
+    hook: "Train a model that can identify anything — from your phone's camera feed"
+    description: "Data augmentation, transfer learning, fine-tuning, deployment"
+  - id: mini_llm
+    title: "Build a Mini-LLM from Scratch"
+    level: expert
+    concepts:
+      - "Transformers: self-attention derivation"
+      - "Custom CUDA kernels with Triton"
+    hook: "Implement every line of a GPT-style model — know exactly what's inside the black box"
+    description: "Tokenization, attention, positional encoding, training loop, sampling"

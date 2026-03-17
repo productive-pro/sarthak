@@ -1,14 +1,20 @@
 """
-Shared agent infrastructure: provider resolution, model building, alert helper.
+Shared agent infrastructure: provider resolution, model building, shell safety.
 
-Intentionally thin — heavy logic lives in providers.py and individual agents.
+Design (pydantic-ai multi-agent pattern):
+  run_llm()  — one-shot call; callers pass tier, not model strings.
+  parse_json_response() — strips fences before json.loads.
+  shared_run_shell()    — safe allowlist-gated shell exec.
+
+Config is loaded ONCE per call via lru_cache in core/config.py — no repeated
+disk reads on the hot path.
 """
 from __future__ import annotations
 
 import asyncio
 import os
-import time
 import re
+import time
 from typing import Any
 
 from sarthak.core.constants import (
@@ -25,21 +31,21 @@ log = get_logger(__name__)
 # ── Provider / model resolution ───────────────────────────────────────────────
 
 def resolve_provider_model(
-    provider: str | None = None, model_name: str | None = None
+    provider: str | None = None,
+    model_name: str | None = None,
 ) -> tuple[str, str]:
     from sarthak.core.config import load_config
     from sarthak.core.ai_utils.multi_provider import normalize_model_name
-
     cfg = load_config()
     ai = cfg.get("ai", {})
-    provider = provider or ai.get("default_provider", DEFAULT_PROVIDER)
+    p = provider or ai.get("default_provider", DEFAULT_PROVIDER)
     if not model_name:
-        pc = ai.get(provider, {})
+        pc = ai.get(p, {})
         model_name = (
             (pc.get("text_model") or pc.get("model") if isinstance(pc, dict) else None)
             or ai.get("default_model", DEFAULT_MODEL)
         )
-    return provider, normalize_model_name(provider, model_name)
+    return p, normalize_model_name(p, model_name)
 
 
 def build_pydantic_model(provider: str, model_name: str):
@@ -48,7 +54,7 @@ def build_pydantic_model(provider: str, model_name: str):
     return build_fallback_model(provider, model_name)
 
 
-# ── Logging helper ────────────────────────────────────────────────────────────
+# ── Logging helpers ───────────────────────────────────────────────────────────
 
 def log_tool(name: str, stage: str, agent: str, args: dict | None = None, **kw: Any) -> None:
     payload: dict[str, Any] = {"tool": name, "stage": stage, "agent": agent}
@@ -58,10 +64,8 @@ def log_tool(name: str, stage: str, agent: str, args: dict | None = None, **kw: 
     log.info("tool_call", **payload)
 
 
-# ── Alert helper ──────────────────────────────────────────────────────────────
-
 async def record_alert(
-    pool: object | None, level: str, source: str, message: str, details: dict | None = None
+    pool: object | None, level: str, source: str, message: str, details: dict | None = None,
 ) -> None:
     try:
         from sarthak.storage.helpers import write_alert
@@ -80,7 +84,7 @@ def is_safe_command(command: str) -> bool:
     return os.path.basename(command.strip().split()[0]) in SAFE_SHELL_PREFIXES
 
 
-# ── Reusable LLM call ────────────────────────────────────────────────────────
+# ── Reusable one-shot LLM call ────────────────────────────────────────────────
 
 async def run_llm(
     system: str,
@@ -89,45 +93,44 @@ async def run_llm(
     model: str | None = None,
     retries: int = 2,
     agent: str = "",
+    tier: str = "balanced",
 ) -> str:
-    """One-shot LLM call returning a plain string. Shared by all agents.
+    """One-shot LLM call → plain string. Shared by all agents/skills.
 
-    Every call is logged via log_llm_call (structlog + markdown file).
-    Pass ``agent`` for a meaningful name in the log; defaults to the caller's
-    module name derived at runtime.
+    tier: 'fast' | 'balanced' | 'powerful' — selects the right model.
+    Config is read once via load_config() (lru-cached in core/config.py).
     """
-    import inspect
-    from sarthak.core.ai_utils.multi_provider import call_llm
+    from sarthak.core.ai_utils.multi_provider import call_llm, resolve_model_for_tier
     from sarthak.core.ai_utils.prompt_logger import log_llm_call
+    from sarthak.core.config import load_config
 
+    cfg = load_config()
     p, m = resolve_provider_model(provider, model)
 
-    # Derive a readable agent name when caller doesn't supply one
-    if not agent:
-        frame = inspect.stack()[1]
-        caller_mod = frame[0].f_globals.get("__name__", "")
-        agent = caller_mod.rsplit(".", 1)[-1]
+    # Resolve tier-appropriate model in one config read
+    if tier != "balanced" or not m:
+        tier_model = resolve_model_for_tier(p, tier, cfg)
+        if tier_model:
+            m = tier_model
 
+    caller = agent or "llm"
     last = ""
     for attempt in range(retries + 1):
-        last = await call_llm(user, provider=p, model=m, system=system)
+        last = await call_llm(user, provider=p, model=m, system=system, cfg=cfg)
         if last and not last.startswith("[Error:"):
             break
         if attempt < retries:
-            await asyncio.sleep(1.0 * (attempt + 1))  # 1s, 2s backoff
+            await asyncio.sleep(1.0 * (attempt + 1))
 
-    log_llm_call(agent=agent, system=system, prompt=user, response=last)
+    log_llm_call(agent=caller, system=system, prompt=user, response=last)
     return last
 
 
 def parse_json_response(raw: str) -> dict:
-    """Strip markdown fences and parse JSON safely."""
+    """Strip markdown fences then parse JSON. Raises json.JSONDecodeError on failure."""
     import json
-    clean = raw.strip()
-    # Remove optional fenced code blocks (```json ... ```)
-    clean = re.sub(r"^```(?:json)?\s*", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"\s*```$", "", clean)
-    clean = clean.strip()
+    clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    clean = re.sub(r"\s*```$", "", clean).strip()
     return json.loads(clean)
 
 
@@ -142,7 +145,9 @@ async def shared_run_shell(command: str, cwd: str, agent_name: str) -> str:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd or os.path.expanduser("~"),
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=SHELL_TIMEOUT_SECONDS)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=SHELL_TIMEOUT_SECONDS
+        )
         result = (stdout.decode().strip() + "\n" + stderr.decode().strip())[:SHELL_OUTPUT_MAX_CHARS]
         log_tool("run_shell", "ok", agent_name, duration_ms=int((time.monotonic() - t) * 1000))
         return result

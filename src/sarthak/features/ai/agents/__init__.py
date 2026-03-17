@@ -1,18 +1,15 @@
 """
-Agent registry — single entry point for all PydanticAI agents.
+Agent registry — single entry point for all pydantic-ai agents.
 
-Usage
------
-    from sarthak.features.ai.agents import get_agent
-    agent = get_agent("orchestrator")          # full capability
+Patterns from pydantic-ai multi-agent docs:
+  - Sub-agents share usage via ctx.usage so token tracking flows up
+  - Agent cache keyed on (provider, model, tool_groups) — rebuilt on config change
+  - Lazy builder loading — imports happen at first build, not at import time
+
+Usage:
+    from sarthak.features.ai.agents import get_agent, invalidate_cache
+    agent = get_agent("orchestrator", tool_groups=frozenset({"activity", "web"}))
     agent = get_agent("vision", provider="openai", model_name="gpt-4o")
-
-Available names: vision, summary, activity_insights, orchestrator
-
-Architecture (pydantic-ai Agent Delegation pattern):
-  orchestrator  ─── delegates to ──► vision  (snapshot analysis)
-                                   ► summary (daily digest)
-  activity_insights  – structured output: classification + extraction
 """
 from __future__ import annotations
 
@@ -23,55 +20,74 @@ from sarthak.core.logging import get_logger
 
 log = get_logger(__name__)
 
-# ── Lazy builder registry ────────────────────────────────────────────────────
+# ── Lazy builder registry ─────────────────────────────────────────────────────
+# Keys: agent name → callable(provider, model, **kwargs) → Agent
+# Populated on first call to avoid circular imports at module load.
 
 _BUILDERS: dict[str, object] = {}
 
 
-def _get_builders() -> dict[str, object]:
+def _builders() -> dict[str, object]:
     if not _BUILDERS:
-        from sarthak.features.ai.agents import (
-            vision, summary, orchestrator
-        )
+        from sarthak.features.ai.agents import vision, summary, orchestrator
         _BUILDERS.update({
-            "vision":       vision.build,
-            "summary":      summary.build,
+            "vision":            vision.build,
+            "summary":           summary.build,
             "activity_insights": summary.build_activity_insights,
-            "orchestrator": orchestrator.build,
+            "orchestrator":      orchestrator.build,
         })
     return _BUILDERS
 
 
-# ── Per-name cache (provider, model) → Agent ─────────────────────────────────
-
-_caches: dict[str, dict[tuple[str, str], Agent]] = {
-    "vision": {}, "summary": {}, "activity_insights": {}, "orchestrator": {},
-}
+# ── Per-agent cache: (provider, model[, groups]) → Agent ─────────────────────
+_caches: dict[str, dict[tuple, Agent]] = {}
 
 
 def get_agent(
     name: str,
     provider: str | None = None,
     model_name: str | None = None,
+    tool_groups: "frozenset[str] | None" = None,
 ) -> Agent:
-    """
-    Return a cached agent by name, building on first call per (provider, model).
+    """Return a cached agent, building on first access per (provider, model[, groups]).
 
-    Parameters
-    ----------
-    name        : one of vision | summary | activity_insights | orchestrator
-    provider    : override config default provider
-    model_name  : override config default model
+    For the orchestrator, tool_groups is included in the cache key so lean
+    intent-matched builds are cached separately from the full build.
+    Sub-agents receive shared usage tracking via ctx.usage (pydantic-ai pattern).
     """
-    builders = _get_builders()
+    builders = _builders()
     if name not in builders:
-        raise ValueError(f"Unknown agent: {name!r}. Choose from: {list(builders)}")
+        raise ValueError(f"Unknown agent: {name!r}. Available: {list(builders)}")
+
     p, m = resolve_provider_model(provider, model_name)
     cache = _caches.setdefault(name, {})
-    if (p, m) not in cache:
-        log.debug("agent_build", agent=name, provider=p, model=m)
-        cache[(p, m)] = builders[name](p, m)
-    return cache[(p, m)]
+
+    cache_key: tuple = (p, m, frozenset(tool_groups)) if (name == "orchestrator" and tool_groups) else (p, m)
+
+    if cache_key not in cache:
+        log.debug("agent_build", name=name, provider=p, model=m,
+                  groups=sorted(tool_groups) if tool_groups else "all")
+        builder = builders[name]
+        if name == "orchestrator" and tool_groups is not None:
+            cache[cache_key] = builder(p, m, tool_groups=tool_groups)
+        else:
+            cache[cache_key] = builder(p, m)
+
+    return cache[cache_key]
 
 
-__all__ = ["get_agent"]
+def invalidate_cache(name: str | None = None) -> None:
+    """Invalidate agent cache on model/config change.
+
+    name=None clears all agents; name='orchestrator' clears only that agent.
+    """
+    if name is None:
+        _caches.clear()
+        _BUILDERS.clear()
+        log.debug("agent_cache_cleared_all")
+    else:
+        _caches.pop(name, None)
+        log.debug("agent_cache_cleared", name=name)
+
+
+__all__ = ["get_agent", "invalidate_cache", "_caches"]

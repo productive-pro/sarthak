@@ -1,0 +1,62 @@
+# Sarthak — Domain Registry Metadata
+# This file is the index of all domains. It maps each SpaceType value to:
+#   - domain_name:        Human-readable display name
+#   - expert_description: What an expert in this domain looks like (used in prompts)
+#   - file:               Filename (without path) of the full domain data file
+#
+# To add a new domain:
+#   1. Add an entry here
+#   2. Create data/domains/<file>.yaml with concept_tree, tools, projects
+#   3. Add the SpaceType enum value in spaces/models.py if new
+
+domains:
+
+  data_science:
+    domain_name: "Data Science & AI Engineering"
+    expert_description: >
+      Expert data scientists understand the math behind every algorithm,
+      use fast tooling (polars, duckdb, marimo), version experiments with MLflow,
+      and write production-grade Python.
+    file: data_science.yaml
+
+  ai_engineering:
+    domain_name: "AI Engineering"
+    expert_description: >
+      AI engineers build, fine-tune, and serve LLMs and deep learning models.
+      They understand transformers from first principles and deploy with observability.
+    file: ai_engineering.yaml
+
+  medicine:
+    domain_name: "Medical AI & Clinical Data Science"
+    expert_description: "Clinician-data-scientists who build and validate AI for healthcare."
+    file: medicine.yaml
+
+  education:
+    domain_name: "Educational Technology & Learning Science"
+    expert_description: "Educators who build intelligent, adaptive learning systems."
+    file: education.yaml
+
+  software_engineering:
+    domain_name: "Software Engineering"
+    expert_description: "Software engineers who build reliable, scalable, maintainable systems."
+    file: software_engineering.yaml
+
+  exam_prep:
+    domain_name: "Exam Preparation"
+    expert_description: "Structured preparation for competitive exams using proven learning science."
+    file: exam_prep.yaml
+
+  business:
+    domain_name: "Business & Data Analytics"
+    expert_description: "Analysts and PMs who turn business data into decisions and products."
+    file: business.yaml
+
+  research:
+    domain_name: "Research & Academia"
+    expert_description: "Researchers who design rigorous experiments and publish reproducible findings."
+    file: research.yaml
+
+  custom:
+    domain_name: "Custom Learning Space"
+    expert_description: "A personalised space for any learning goal."
+    file: custom.yaml

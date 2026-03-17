@@ -97,7 +97,7 @@ export default function SpacesList() {
   const [trashLoading, setTrashLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
-  const { setSpacesView, setCurrentSpace, setSpaceRoadmap, ok, err } = useStore();
+  const { setSpacesView, setCurrentSpace, setSpaceRoadmap, setJustCreatedSpace, ok, err } = useStore();
 
   const spacesTransform = useCallback(r => (Array.isArray(r) ? r : r?.spaces ?? r?.items ?? []), []);
   const { data: spaces=[], loading, reload, setData:setSpaces } = useFetch('/spaces',[], { initialData:[], transform:spacesTransform });
@@ -131,7 +131,12 @@ export default function SpacesList() {
 
   const handleSpaceCreated = async (created) => {
     setShowCreate(false); setWizardCreatedResult(null); await reload();
-    if (created?.directory) { setCurrentSpace({name:created.name,directory:created.directory,space_type:created.space_type}); setSpaceRoadmap(null); setSpacesView('home'); }
+    if (created?.directory) {
+      setJustCreatedSpace(created.name);
+      setCurrentSpace({name:created.name,directory:created.directory,space_type:created.space_type});
+      setSpaceRoadmap(null);
+      setSpacesView('home');
+    }
   };
 
   return (
@@ -157,7 +162,7 @@ export default function SpacesList() {
         ) : (
           <div className="spaces-grid">
             {spaces.map(s=><SpaceCard key={s.name||s.id} variant="list" space={s}
-              onClick={()=>{ setCurrentSpace(s); setSpaceRoadmap(null); setSpacesView('home'); }}
+              onClick={()=>{ setCurrentSpace({...s}); setSpaceRoadmap(null); setSpacesView('home'); }}
               onToggleActive={toggleActive} onSettings={setSettingsSpace} />)}
           </div>
         )}

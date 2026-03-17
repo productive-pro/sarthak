@@ -12,13 +12,14 @@ import Config from './pages/Config';
 const savedTheme = localStorage.getItem('theme') || 'dark';
 document.documentElement.setAttribute('data-theme', savedTheme);
 
-/** Map of page id → component. Add new pages here only. */
+/** Map of page id → rendered element (not component, so we can pass props). */
 const PAGES = {
-  dashboard: Dashboard,
-  chat:      Chat,
-  spaces:    Spaces,
-  agents:    Agents,
-  config:    Config,
+  dashboard: <Dashboard />,
+  chat:      <Chat mode="chat" />,
+  agui:      <Chat mode="agui" />,
+  spaces:    <Spaces />,
+  agents:    <Agents />,
+  config:    <Config />,
 };
 
 export default function App() {
@@ -39,13 +40,13 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, [setPage]);
 
-  const Page = PAGES[page] ?? Dashboard;
+  const PageEl = PAGES[page] ?? PAGES.dashboard;
 
   return (
     <div id="app">
       <Sidebar />
       <main id="main">
-        <Page />
+        {PageEl}
       </main>
       <Toast />
     </div>

@@ -1,0 +1,71 @@
+# Domain: Medical AI & Clinical Data Science
+
+concept_tree:
+  novice:
+    - "Clinical data types: vitals, labs, imaging, free-text notes"
+    - "ICD-10 and SNOMED CT: coding systems for diagnoses"
+    - "EHR structure and common data quality issues"
+    - "Biostatistics: sensitivity, specificity, PPV, NPV, ROC curves"
+    - "Python for clinical data: pandas with MIMIC-III demo"
+  beginner:
+    - "Survival analysis: Kaplan-Meier curves, log-rank test"
+    - "Clinical trial design: RCTs, bias types, p-values, confidence intervals"
+    - "FHIR: HL7 standard, SMART on FHIR apps"
+    - "De-identification: HIPAA Safe Harbor vs Expert Determination"
+    - "NLP for clinical notes: named entity recognition with spaCy"
+  intermediate:
+    - "Medical imaging: DICOM format, windowing, preprocessing pipelines"
+    - "CNN architectures for X-ray classification (CheXNet replication)"
+    - "Reimplementing clinical scores: APACHE II, SOFA, NEWS2"
+    - "Federated learning: theory and simulation across hospital cohorts"
+    - "AI fairness: subgroup analysis, bias sources in clinical ML"
+  advanced:
+    - "Genomics pipelines: variant calling, GWAS, polygenic risk scores"
+    - "Multimodal EHR models: labs + notes + imaging fusion"
+    - "LLMs for clinical decision support: RAG over medical literature"
+    - "Causal inference for treatment effect estimation (propensity matching)"
+    - "FDA SaMD guidance: clinical validation, post-market surveillance"
+  expert:
+    - "Real-world evidence: propensity matching, instrumental variables"
+    - "Clinical NLP at scale: ICD auto-coding production system"
+    - "Reproducible clinical research: DVC + MLflow in regulated context"
+
+tools:
+  - name: lifelines
+    purpose: "Survival analysis"
+    install_linux: "uv add lifelines"
+    category: core
+  - name: pydicom
+    purpose: "DICOM medical imaging"
+    install_linux: "uv add pydicom"
+    category: core
+  - name: medspacy
+    purpose: "Clinical NLP"
+    install_linux: "uv add medspacy"
+    category: core
+  - name: pandas
+    purpose: "Data manipulation"
+    install_linux: "uv add pandas"
+    category: core
+  - name: matplotlib
+    purpose: "Visualization"
+    install_linux: "uv add matplotlib"
+    category: core
+  - name: scikit-learn
+    purpose: "ML algorithms"
+    install_linux: "uv add scikit-learn"
+    category: core
+  - name: jupyter
+    purpose: "Interactive computation"
+    install_linux: "uv add jupyter"
+    category: core
+
+projects:
+  - id: readmission_predictor
+    title: "30-Day Readmission Predictor"
+    level: intermediate
+    concepts:
+      - "Survival analysis"
+      - "AI fairness"
+    hook: "A model that every hospital needs — and you'll know exactly how to validate it"
+    description: "Build, evaluate, and audit a readmission risk model on MIMIC demo data"

@@ -292,7 +292,7 @@ async def _get_all_spaces_with_dirs() -> list[dict]:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Run handlers  — learning-context based, no ActivityWatch
+# Run handlers  — learning-context based
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def _run_today(pool: Any, ctx: ContextTypes.DEFAULT_TYPE | None = None) -> str:

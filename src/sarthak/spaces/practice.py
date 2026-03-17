@@ -373,7 +373,7 @@ class PracticeEngine:
         scope: str,
     ) -> list[str]:
         """Return the concept list for the given test type + scope."""
-        from sarthak.spaces.domains import get_domain
+        from sarthak.spaces.domain_loader import get_domain
         domain = get_domain(profile.space_type)
         tree: dict = domain.get("concept_tree", {})
         all_concepts: list[str] = []

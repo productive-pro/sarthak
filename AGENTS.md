@@ -7,9 +7,9 @@ working on the **Sarthak AI** codebase. Read it before touching any code.
 
 ## Project Overview
 
-Sarthak AI is a **privacy-first productivity intelligence platform for effective learning and doing projects** built in Python 3.11+.
-It tracks work activity, manages adaptive learning "Spaces", and runs scheduled AI agents —
-all runnable fully offline.
+Sarthak AI is a **privacy-first productivity intelligence platform for effective learning and
+doing projects** built in Python 3.11+. It tracks work activity, manages adaptive learning
+"Spaces", and runs scheduled AI agents — all runnable fully offline.
 
 **Primary entry point:** `sarthak` CLI → `src/sarthak/cli/`
 **Tech stack:** pydantic-ai, Pydantic v2, FastAPI, Textual TUI, SQLite (aiosqlite), structlog
@@ -21,39 +21,103 @@ all runnable fully offline.
 
 ```
 src/sarthak/
-├── agents/          # Custom automation agent engine (create / schedule / run)
-│   ├── models.py        AgentSpec, AgentRun, AgentScope, AgentTool, SandboxPolicy
-│   ├── creator.py       AI-powered agent creator (natural language → AgentSpec)
-│   ├── runner.py        Agent executor: sandbox → LLM → save run → notify
-│   ├── scheduler.py     Cron scheduler + 4 built-in system agents
-│   ├── store.py         JSON persistence for specs and run history
-│   ├── roadmap_agents.py  generate_roadmap / build_digest / stream_explain
-│   └── sandbox/         Sandboxing subsystem (see below)
-├── cli/             # Click CLI commands
-├── core/            # Config, logging, constants, notifications
-│   └── ai_utils/        LLM provider plumbing (multi-provider, fallback model)
+├── agents/              Custom automation agent engine
+│   ├── models.py            AgentSpec, AgentRun, AgentScope, AgentTool, SandboxPolicy
+│   ├── creator.py           AI-powered agent creator (NL → AgentSpec)
+│   ├── runner.py            Executor: sandbox → LLM → save run → notify
+│   ├── scheduler.py         Cron scheduler + built-in system agents
+│   ├── store.py             JSON persistence for specs and run history
+│   ├── roadmap_agents.py    generate_roadmap / build_digest / stream_explain
+│   └── sandbox/             Sandboxing subsystem
+├── cli/                 Click CLI commands
+├── core/                Config, logging, constants, notifications
+│   └── ai_utils/            LLM provider plumbing (multi-provider, fallback chain)
 ├── features/
-│   ├── ai/              Orchestrator agent + specialist sub-agents
-│   │   ├── agent.py         Public API: ask_orchestrator(), analyse_snapshot(), etc.
+│   ├── ai/
+│   │   ├── agent.py         ★ PRIMARY API: ask_orchestrator(), stream_orchestrator(),
+│   │   │                      _classify_intent(), _compact_history(), analyse_snapshot()
 │   │   ├── agents/
-│   │   │   ├── orchestrator.py  Primary user-facing pydantic-ai Agent (all channels)
-│   │   │   ├── summary.py
-│   │   │   └── vision.py
-│   │   ├── deps.py          Pydantic dep/result models (OrchestratorDeps, OrchestratorResult)
-│   │   ├── skills/          User-editable skill snippets injected into system prompt
+│   │   │   ├── orchestrator.py  pydantic-ai Agent[OrchestratorDeps, OrchestratorResult]
+│   │   │   ├── summary.py       Daily summary + activity insights agents
+│   │   │   └── vision.py        Screenshot analysis agent
+│   │   ├── deps.py          OrchestratorDeps, OrchestratorResult, SarthakResult, …
+│   │   ├── skills/          User-editable skill snippets (injected into system prompt)
 │   │   └── tools/           @agent.tool functions registered on the orchestrator
-│   ├── channels/        Telegram bot, TUI, web channel adapters
-│   ├── mcp/             MCP server integration
+│   ├── channels/
+│   │   ├── __init__.py      ★ dispatch() / stream_dispatch() / save_chat_turn() / load_history_messages()
+│   │   ├── telegram/bot.py  Telegram bot (streaming via placeholder-edit loop)
+│   │   └── whatsapp/        neonize QR-login bot (streaming via edit_message)
+│   ├── mcp/             MCP server
 │   └── tui/             Textual TUI
-├── orchestrator/    # Top-level routing: route() → ask_orchestrator()
-├── spaces/          # Learning Spaces subsystem
-│   ├── models.py        Core data models (SpaceProfile, LearnerProfile, LearningTask…)
-│   ├── agents/          Stateless specialist agents (curriculum, math, assessment…)
-│   ├── store.py         Space profile persistence
-│   ├── roadmap/         RoadmapDB (SQLite), SRS engine, recommendations
-│   └── orchestrator.py  Spaces session orchestration
-└── storage/         # SQLite activity store helpers
+├── orchestrator/
+│   └── orchestrator.py  Thin compat shim → features/ai/agent.ask_orchestrator()
+├── spaces/              Learning Spaces subsystem
+│   ├── models.py            SpaceProfile, LearnerProfile, LearningTask, …
+│   ├── agents/              Stateless specialist agents (curriculum, math, assessment, …)
+│   ├── store.py             Space profile persistence
+│   ├── learner_context.py   build_learner_context() — real signal aggregator
+│   ├── memory.py            SOUL/MEMORY/HEARTBEAT per-space files
+│   ├── roadmap/             RoadmapDB (SQLite), SRS (SM-2), recommendations
+│   ├── roadmap_init.py      ensure_roadmap() — per-space lock via weakref
+│   └── orchestrator.py      Spaces session orchestration
+└── storage/             SQLite activity store, repositories, vector backends
 ```
+
+---
+
+## Request Flow (Any Channel → LLM → Response)
+
+```
+User input (Web / TUI / Telegram / WhatsApp)
+  │
+  ├── Web (POST /api/chat)
+  │     web/services/chat.py::stream_chat_sse()
+  │       → load_history_messages(sid)       [SQLite, once, capped at 40]
+  │       → _compact_history() if >32 msgs   [fast model summary]
+  │       → agent.run_stream()               [intent-classified groups]
+  │           ↳ SSE: tool_start/tool_done events + text chunks
+  │       → save_chat_turn(sid, q, reply)
+  │
+  ├── TUI / Telegram / WhatsApp
+  │     features/channels/__init__.py::stream_dispatch() or dispatch()
+  │       → load_history_messages(sid)
+  │       → features/ai/agent.py::stream_orchestrator() or ask_orchestrator()
+  │           → _classify_intent(question)   [keyword → tool_groups, <1ms]
+  │           → _compact_history()           [if history > 32 messages]
+  │           → get_agent("orchestrator", groups=…)  [cached by (p,m,groups)]
+  │           → agent.run() / run_stream()   [pydantic-ai tool loop]
+  │       → save_chat_turn(sid, q, reply)
+  │
+  └── MCP  features/mcp/server.py → dispatch()
+```
+
+**Critical invariant:** ALL channels call `ask_orchestrator()` or `stream_orchestrator()`
+from `features/ai/agent.py`. Never build an agent directly in a channel adapter.
+
+---
+
+## Context Budget Management
+
+Implemented in `features/ai/agent.py`. Mirrors OpenCode and Claude Code patterns.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `_MAX_HISTORY` | 40 | Hard cap: keep last 20 Q/A pairs |
+| `_COMPACT_THRESHOLD` | 32 | Compact when history exceeds this |
+
+**`_classify_intent(question)`** — keyword scan (<1 ms) → `frozenset[str]` of tool groups.
+Fewer groups = fewer tool schemas injected = smaller system prompt = more room for history.
+Groups: `spaces`, `activity`, `system`, `shell`, `rag`, `workspace`, `skills`, `web`.
+
+**`_compact_history(history)`** — when `len(history) > _COMPACT_THRESHOLD`:
+1. Split: old half → summarise via fast model (max 200 words)
+2. Replace old messages with one synthetic `[Conversation summary]` assistant message
+3. Keep recent `_MAX_HISTORY` messages intact
+4. Never mutates the input list
+
+**Memory extraction** — `_fire_memory_extraction(cwd, q, reply, action)`:
+Fire-and-forget after every learning exchange (Taught/Evaluated/QuickTest).
+Appends one bullet to `.spaces/MEMORY.md` if the exchange reveals a behavioural pattern.
 
 
 ---
@@ -62,229 +126,160 @@ src/sarthak/
 
 ### 1. Orchestrator Agent (`features/ai/agents/orchestrator.py`)
 
-The **single entry point** for all user-facing text input (TUI, Telegram, Web).
+Single entry point for all user-facing text input (Web, TUI, Telegram, WhatsApp, MCP).
 
-- Built with `pydantic-ai` `Agent[OrchestratorDeps, OrchestratorResult]`
-- Uses **agent delegation** via `@agent.tool` to specialist sub-agents (`vision`, `summary`)
-- Registered tools: `query_activity`, `run_shell`, `spaces_*`, `rag_*`, skill CRUD, web search
-- System prompt built from `core/ai_utils/prompts/` + injected user skills
-- **Do not add heavy logic here.** Route new capabilities to a new tool or sub-agent.
+- `Agent[OrchestratorDeps, OrchestratorResult]` built with pydantic-ai
+- Tool groups loaded on-demand based on `_classify_intent()` (lean schemas)
+- Agent cache keyed on `(provider, model, frozenset(groups))` — rebuilt on config change
+- **Do not add heavy logic here.** Route new capabilities to a new `@agent.tool`.
 
-**Call path:** user input → `orchestrator.route()` → `features/ai/agent.ask_orchestrator()` → `Agent.run()`
+**Call path:**
+```
+any channel → features/channels/__init__.dispatch/stream_dispatch
+           → features/ai/agent.ask_orchestrator / stream_orchestrator
+           → features/ai/agents/orchestrator.build(provider, model, tool_groups)
+           → Agent.run() / Agent.run_stream()
+```
 
 ### 2. Custom Agent Engine (`agents/`)
 
-Lets users define their own scheduled automation agents in natural language.
+User-defined scheduled automation agents.
 
 | File | Responsibility |
 |---|---|
-| `models.py` | `AgentSpec` (persistent definition), `AgentRun` (execution record), `SandboxPolicy` |
-| `creator.py` | `create_agent_from_description()` — LLM parses NL → `AgentSpec`, saves to disk |
-| `runner.py` | `run_agent()` — orchestrates sandbox → pydantic-ai `Agent.run()` → save run → Telegram |
-| `scheduler.py` | `tick()` runs every 60 s; fires due agents as background `asyncio.Task`s |
-| `store.py` | JSON spec files + registry; `save_agent`, `load_agent`, `list_agents`, `save_run` |
+| `models.py` | `AgentSpec`, `AgentRun`, `SandboxPolicy` |
+| `creator.py` | NL → `AgentSpec` via LLM |
+| `runner.py` | sandbox → `Agent.run()` → save → notify |
+| `scheduler.py` | `tick()` every 60s, fires as `asyncio.Task`s |
+| `store.py` | JSON spec files + registry |
 
-**Storage layout:**
-- Global agents: `~/.sarthak_ai/agents/<agent_id>/spec.json`
-- Space agents: `<space_dir>/.spaces/agents/<agent_id>/spec.json`
-- Run history: `<agent_dir>/runs/<run_id>.json` (capped at 50)
-- Registry index: `~/.sarthak_ai/agents/registry.json`
-
-
-**Built-in system agents** (auto-registered on startup via `scheduler.ensure_builtin_agents()`):
+**Built-in agents** (auto-registered via `ensure_builtin_agents()`):
 
 | agent_id | Schedule | Purpose |
 |---|---|---|
-| `sarthak-daily-digest` | `0 8 * * *` | Daily learning digest per space → Telegram |
-| `sarthak-srs-push` | `0 9 * * *` | SRS due cards reminder → Telegram |
-| `sarthak-recommendations` | `0 * * * *` | Hourly next-concept refresh for all spaces |
-| `sarthak-weekly-digest` | `0 9 * * 0` | Full week-in-review → Telegram |
+| `sarthak-daily-digest` | `0 8 * * *` | Digest per space → Telegram |
+| `sarthak-srs-push` | `0 9 * * *` | SRS due reminder → Telegram |
+| `sarthak-recommendations` | `0 * * * *` | Hourly next-concept refresh |
+| `sarthak-weekly-digest` | `0 9 * * 0` | Week-in-review → Telegram |
+| `sarthak-workspace-analyse` | `*/30 * * * *` | Refresh Optimal_Learn.md |
+
+**Thread-safety note:** `_write_recommendations_summary` runs in `asyncio.to_thread` and uses
+stdlib `sqlite3` (not aiosqlite) to avoid cross-thread asyncio.Lock issues.
 
 ### 3. Spaces Sub-Agents (`spaces/agents/`)
 
-15 **stateless** specialist agents. Each has ONE responsibility.
-Called by the Spaces orchestrator and by the custom agent scheduler, never directly by user input.
+Stateless specialists. Each has one responsibility. Called by the Spaces orchestrator.
 
-| Class | Role |
-|---|---|
-| `OnboardingAgent` | Detect learner background; set personalization flags |
-| `CurriculumAgent` | ZPD-based next-concept selection |
-| `MathAgent` | Mathematical explanations at the right depth |
-| `TaskBuilderAgent` | Hands-on tasks with starter code, hints, bonus |
-| `ProjectAgent` | Scaffold and guide end-to-end projects |
-| `EngagementAgent` | Transform dry content into engaging Markdown |
-| `AssessmentAgent` | Evaluate submissions; detect novel approaches |
-| `WorkspaceAgent` | Non-destructive workspace restructuring |
-| `SpacedRepetitionAgent` | SM-2 review scheduling (pure logic, no LLM) |
-| `BadgeAgent` | Achievement system (pure logic, no LLM) |
-| `QuickTestAgent` | 5-minute micro-task generation |
-| `WorkspaceAnalyserAgent` | Produce `Optimal_Learn.md` from workspace snapshot |
-| `ExternalToolsAgent` | Detect and recommend external tools (VS Code, Colab…) |
-| `EnvironmentAgent` | Real OS scan → missing tool recommendations |
-
-All LLM-calling agents use `_call_llm_json(system, prompt, fallback)` — returns a `dict`,
-never raises, falls back to the provided `fallback` dict on any LLM failure.
+`OnboardingAgent` · `CurriculumAgent` · `MathAgent` · `TaskBuilderAgent` · `ProjectAgent`
+`EngagementAgent` · `AssessmentAgent` · `WorkspaceAgent` · `SpacedRepetitionAgent`
+`BadgeAgent` · `QuickTestAgent` · `WorkspaceAnalyserAgent` · `ExternalToolsAgent` · `EnvironmentAgent`
 
 ### 4. Roadmap Agents (`agents/roadmap_agents.py`)
 
-Three pydantic-ai agents for the Spaces roadmap feature:
+- `generate_roadmap()` — structured output → `Roadmap`
+- `build_digest()` — real learner data → Markdown digest + SRS sync
+- `stream_explain()` — async SSE token stream for concept explanation
 
-- `generate_roadmap()` — structured output → `Roadmap` with chapters/topics/concepts
-- `build_digest()` — real learner data → Markdown daily digest (evidence-based SRS sync included)
-- `stream_explain()` — async SSE token stream for inline concept explanations
+---
 
+## Learning Pipeline
+
+```
+build_learner_context(space_dir, profile)    [spaces/learner_context.py]
+  → ingest notes, media notes, activity store, test results, sessions, RAG index
+  → ConceptEvidence per concept (mastery_confidence = 40%test + 30%understand + 20%notes + 10%qt)
+  → LearnerContext { strong, weak, in_progress, srs_due_by_evidence, … }
+        ↓
+recommend_with_reasons(roadmap, mastered, struggling, review_due)
+  [spaces/roadmap/recommend.py]
+  → Score: struggle(100) > review(80) > prereq_ready(60) > in_progress(40)
+           > tag_overlap(10×) > order_decay(-1×)
+  → writes recommendations.md every 30min (no LLM)
+        ↓
+sync_from_digest(db_path, DigestSignals)     [spaces/roadmap/srs.py]
+  → SM-2 upsert per concept based on evidence grade
+  → stuck→grade0, test_failed→1, weak→1, no_note→2, strong→4
+        ↓
+get_due(db_path)                             [spaces/roadmap/srs.py]
+  → cards due today or overdue, ordered by urgency
+```
+
+**SRS pool safety:** `srs._POOL_LOCK` is an `asyncio.Lock` bound to the main event loop.
+All callers (`get_due`, `sync_from_digest`, `upsert_card`) run in the main event loop. ✅
+`_write_recommendations_summary` uses stdlib `sqlite3` — safe in worker threads. ✅
+
+---
+
+## Space Memory Files
+
+| File | Created | Updated | Purpose |
+|---|---|---|---|
+| `SOUL.md` | space init | never | Agent identity, domain goal, learner rules |
+| `MEMORY.md` | space init | post-LLM (fire-and-forget) | Behavioural patterns |
+| `HEARTBEAT.md` | space init | session end | SRS due + streak |
+| `memory/YYYY-MM-DD.md` | first session | session end | Raw daily session logs |
+
+**Read path:** `read_context_block_async(space_dir, include_heartbeat)` — cached 120s.
+Default: SOUL + MEMORY only (~600 chars). HEARTBEAT only for SRS/streak questions.
+
+**Write path:** All writes are atomic (write-to-tmp → rename).
+Weekly `distill_memory()` rewrites MEMORY.md as a clean deduplicated bullet list.
 
 ---
 
 ## Sandbox System (`agents/sandbox/`)
 
-Every custom agent run is wrapped by `enforce_sandbox()` from `sandbox/enforcer.py`.
+Every custom agent run is wrapped by `enforce_sandbox(spec, execute_fn)`:
 
 ```
 enforce_sandbox(spec, execute_fn)
-  ├── build_sandbox_config(spec)   # derive SandboxConfig from AgentSpec
-  ├── scrub(spec.prompt)           # strip secrets before LLM sees them
+  ├── build_sandbox_config(spec)     # derive SandboxConfig from AgentSpec
+  ├── scrub(spec.prompt)             # strip secrets before LLM
   ├── asyncio.wait_for(execute_fn, timeout=cfg.wall_timeout)
-  ├── scrub(output)                # strip secrets from output
-  └── truncate output to cfg.output_cap
+  ├── scrub(output)                  # strip secrets from output
+  └── truncate to cfg.output_cap
 ```
 
-Key `SandboxConfig` fields:
-- `allow_shell`, `allow_web`, `allow_file_read`, `allow_file_write`, `allow_http_fetch`
-- `write_roots`, `read_roots` — `PathGuard` enforces these strictly
-- `wall_timeout` (default 120 s system / 300 s space), `memory_cap`, `cpu_seconds`
-- `output_cap` (64 KB), `max_web_calls` (10 per run)
-
-**Override resolution order:** per-agent `SandboxPolicy` > `config.toml [agents.sandbox.*]` > hardcoded defaults
-
-Disable sandbox for dev only:
-```toml
-# config.toml
-[agents.sandbox.system]
-enabled = false
-```
-
----
-
-## LLM Provider Plumbing
-
-All agents use two helpers from `features/ai/agents/_base.py`:
-
-```python
-resolve_provider_model(provider?, model?)  # → (provider_str, model_str)
-build_pydantic_model(provider, model)      # → FallbackModel chain (3-tier)
-```
-
-`build_fallback_model()` in `core/ai_utils/multi_provider.py` builds a 3-tier fallback
-chain so agents survive transient provider failures.
-
-**Config:** `config.toml` → `[ai]` section → `default_provider`, per-provider `text_model`.
-
-One-shot LLM call shared by all agents:
-```python
-from sarthak.features.ai.agents._base import run_llm
-result: str = await run_llm(system_prompt, user_prompt)
-```
-
----
-
-## Core Data Models
-
-### AgentSpec (`agents/models.py`)
-```python
-agent_id: str           # slug, e.g. "daily-digest"
-name: str
-prompt: str             # task instruction
-schedule: str           # cron expression
-tools: list[AgentTool]  # WEB_SEARCH | SHELL | FILE_READ | FILE_WRITE | HTTP_FETCH
-scope: AgentScope       # GLOBAL | SPACE
-sandbox: SandboxPolicy  # optional resource overrides
-```
-
-### SpaceProfile / LearnerProfile (`spaces/models.py`)
-Core learning state persisted as JSON via `spaces/store.py`.
-Key learner fields: `skill_level`, `mastered_concepts`, `struggling_concepts`,
-`concept_mastery_map`, `xp`, `streak_days`, `badges`, `is_technical`.
-
-### OrchestratorResult (`features/ai/deps.py`)
-```python
-reply: str          # Markdown response to user
-action_taken: str   # what the agent did ("query_activity", "spaces_session", "error"…)
-```
-
+Key fields: `allow_shell`, `allow_web`, `allow_file_read`, `allow_file_write`,
+`write_roots`, `read_roots`, `wall_timeout` (120s), `output_cap` (64 KB).
 
 ---
 
 ## Key Conventions
 
-1. **No regex routing** — all free-text goes to the orchestrator agent. Deterministic
-   button/command actions are dispatched in the channel layer before calling the orchestrator.
-
-2. **Stats only from storage** — activity tools return aggregated stats, never raw rows,
-   to avoid LLM context bloat.
-
-3. **Stateless sub-agents** — Spaces sub-agents hold no session state. Pass everything
-   they need (SpaceContext, primitives) on every call.
-
-4. **JSON output from LLM** — any agent that needs structured data from an LLM must:
-   - Put `Output ONLY valid JSON: {...}` at the end of the system prompt.
-   - Parse with `parse_json_response(raw)` (strips markdown fences before `json.loads`).
-   - Provide a `fallback` dict so the call never crashes on LLM failure.
-
-5. **Pydantic v2** — use `model.model_dump_json()`, `Model.model_validate_json()`,
-   `model.model_copy()`. Do **not** use v1 `.dict()` / `.parse_raw()`.
-
-6. **Async throughout** — all I/O (LLM, DB, filesystem) is `async`.
-   Use `asyncio.create_task()` for fire-and-forget agent runs in the scheduler.
-
-7. **Structured logging** — always `structlog.get_logger(__name__)` or `get_logger(__name__)`.
-   Log with key-value pairs: `log.info("event_name", key=value)`.
-
-8. **Secret scrubbing** — `sandbox/secret_scrubber.py` runs automatically via `enforce_sandbox`.
-   Never pass API keys in agent prompts or custom tool inputs.
-
-9. **AGENTS.md in Space workspaces** — `WorkspaceAnalyserAgent._sample_workspace()` reads any
-   `AGENTS.md` found in the learner's workspace (up to 600 chars) and includes it in the
-   `Optimal_Learn.md` prompt context. Place an AGENTS.md in a Space to give the orchestrator
-   persistent project context.
+1. **All free-text → orchestrator.** Never add routing logic in channel adapters.
+2. **Use `ask_orchestrator()` / `stream_orchestrator()`** — never call `get_agent()` directly
+   in channel code. These functions apply intent classification + history compaction.
+3. **Stats only from storage** — activity tools return aggregates, never raw rows.
+4. **Stateless sub-agents** — pass everything they need on each call.
+5. **JSON from LLM** — end system prompt with `Output ONLY valid JSON: {...}`.
+   Parse with `parse_json_response(raw)`. Always provide a `fallback` dict.
+6. **Pydantic v2** — `model.model_dump_json()`, `Model.model_validate_json()`.
+   Do NOT use v1 `.dict()` / `.parse_raw()`.
+7. **Async throughout** — all I/O is `async`. Fire-and-forget via `asyncio.create_task()`.
+8. **Structured logging** — `get_logger(__name__)`, log with key-value pairs.
+9. **`_write_recommendations_summary` is sync (stdlib sqlite3)** — safe for `asyncio.to_thread`.
 
 ---
 
-## How-To: Adding New Functionality
+## Adding New Functionality
 
-### Add a new tool to the Orchestrator
+### New orchestrator tool
+1. Implement in `features/ai/tools/` following existing patterns.
+2. Register in `features/ai/agents/orchestrator.py` with `@agent.tool` or `@agent.tool_plain`.
+3. Add keyword(s) to `_KW` in `features/ai/agent._classify_intent()` so the tool is
+   included only when needed (keeps system prompt lean).
 
-1. Implement the tool function in `features/ai/tools/` (follow existing tool patterns).
-2. Import and register it in `features/ai/agents/orchestrator.py`.
-3. Use `@agent.tool` if you need `RunContext[OrchestratorDeps]` (for pool/cwd/flags).
-   Use `@agent.tool_plain` for stateless helpers with no deps.
-4. Add a clear docstring — pydantic-ai exposes it to the LLM as the tool description.
+### New built-in system agent
+1. Add dict to `_BUILTIN_AGENTS` in `agents/scheduler.py`.
+2. Add handler `_run_<n>_agent(spec)` and register in `_HANDLERS`.
+3. Delegate to existing helpers (`build_digest`, `get_due`, etc.).
 
-### Add a new AgentTool capability
-
-1. Add enum value to `AgentTool` in `agents/models.py`.
-2. Add a `_make_<tool>_tool()` builder in `agents/runner.py`.
-3. Register it in `_build_tools()` gated on the relevant `SandboxConfig.allow_*` flag.
-4. Add the corresponding `allow_*` field to `SandboxConfig` in `sandbox/config.py`.
-
-### Add a new built-in system agent
-
-1. Add a dict entry to `_BUILTIN_AGENTS` in `agents/scheduler.py`.
-2. Add a handler `_run_<name>_agent(spec)` and register it in the `handlers` dict in
-   `_run_agent_with_context()`.
-3. Keep handlers focused — delegate to existing helpers (`build_digest`, `get_due`, etc.).
-
----
-
-## Running Tests & Linting
-
-```bash
-uv run pytest                  # all tests (asyncio_mode = auto)
-uv run pytest tests/agents/    # agent engine tests only
-
-uv run ruff check src/
-uv run ruff format src/
-```
+### New AgentTool capability
+1. Add enum to `AgentTool` in `agents/models.py`.
+2. Add `_make_<tool>_tool()` in `agents/runner.py`.
+3. Register in `_build_tools()` gated on `SandboxConfig.allow_*`.
+4. Add `allow_*` field to `SandboxConfig` in `sandbox/config.py`.
 
 ---
 
@@ -292,215 +287,31 @@ uv run ruff format src/
 
 | What | Where |
 |---|---|
-| CLI commands | `src/sarthak/cli/` |
-| App config | `config.toml` (project root) or `~/.sarthak_ai/config.toml` |
-| System prompts | `src/sarthak/core/ai_utils/prompts/` |
-| Agent prompts | `src/sarthak/agents/prompts/` |
-| Provider normalization | `src/sarthak/core/ai_utils/multi_provider.py` |
-| Global agent storage | `~/.sarthak_ai/agents/` |
+| Primary LLM API | `features/ai/agent.py` |
+| Channel dispatch | `features/channels/__init__.py` |
+| Orchestrator agent build | `features/ai/agents/orchestrator.py` |
+| Agent registry + cache | `features/ai/agents/__init__.py` |
+| Provider plumbing | `core/ai_utils/multi_provider.py` |
+| App config | `~/.sarthak_ai/config.toml` |
 | Space data | `<space_dir>/.spaces/` |
-| Optimal_Learn.md | `<space_dir>/.spaces/Optimal_Learn.md` |
 | SRS database | `<space_dir>/.spaces/sarthak.db` |
-| Run logs | `logs/` (project root) |
-| Space Memory files | `<space_dir>/.spaces/{SOUL,USER,HEARTBEAT,MEMORY}.md` |
-| Space daily logs | `<space_dir>/.spaces/memory/YYYY-MM-DD.md` |
-| Vector index | `<space_dir>/.spaces/rag/sarthak.vec` |
-| Storage backends | `src/sarthak/storage/backends/{sqlite,postgres,duckdb}.py` |
-| Vector backends | `src/sarthak/storage/vector/{sqlite_vec,qdrant,chroma}.py` |
+| Recommendations | `<space_dir>/.spaces/recommendations.md` |
+| Space Memory files | `<space_dir>/.spaces/{SOUL,MEMORY,HEARTBEAT}.md` |
+| Global agent storage | `~/.sarthak_ai/agents/` |
+| Prompt history logs | `~/.sarthak_ai/prompt_history/` |
+| Vector index | `<space_dir>/.spaces/rag/` |
 
 ---
 
-## Sarthak Space Memory
+## Dead / Tombstone Files
 
-Every Space has a set of persistent Markdown files written and read by agents:
+These files are kept for git blame readability but contain no live code:
 
-| File | Created by | Updated by | Purpose |
-|---|---|---|---|
-| `SOUL.md` | `init_space_profile()` | Never overwritten | Agent identity for this domain |
-| `USER.md` | `init_space_profile()` | Every `save_profile()` call | Live learner state snapshot |
-| `HEARTBEAT.md` | `init_space_profile()` | Hourly by `sarthak-memory-sync` | SRS due + daily checks |
-| `MEMORY.md` | First session scaffold | Sunday by `sarthak-memory-sync` (LLM distill) | Long-term learner patterns |
-| `memory/YYYY-MM-DD.md` | First session of the day | Every session end | Raw daily session logs |
-
-**Read path:** `WorkspaceAnalyserAgent` calls `read_context_block_async(space_dir)` at session start. Result cached in Redis/LRU for 120s. Cache invalidated on every write.
-
-**Write path:**
-- `save_profile()` → `sync_user_md()` (always sync, called from thread)
-- `append_daily_log()` → appends to today's daily file (async)
-- `sarthak-memory-sync` (22:00 nightly) → parallel `sync_user_md` + `sync_heartbeat_md` per space; Sunday adds `distill_memory()`
-- All writes are atomic (write-to-tmp → rename)
-
-**Public API** (`spaces/memory.py`):
-```python
-await init_space_memory(space_dir, profile)          # called once at space init
-     sync_user_md(space_dir, profile)                # sync, called from save_profile()
-     sync_heartbeat_md(space_dir, profile, due_cards) # sync, called hourly
-await append_daily_log(space_dir, session, profile)  # async, called at session end
-await distill_memory(space_dir, profile)             # async LLM, called weekly
-await read_context_block_async(space_dir, max_chars) # cached, used by orchestrator
-```
-
----
-
-## Universal Storage Layer
-
-All storage I/O goes through the **repository pattern** — business logic never imports DB drivers directly.
-
-### Factory
-```python
-from sarthak.storage.factory import get_activity_repo, get_embedding_repo, get_cache, cached
-
-repo  = get_activity_repo()            # process singleton, thread-safe
-erepo = await get_embedding_repo(dir)  # per-space singleton, async-safe
-cache = get_cache()                    # Redis or LRU, transparent fallback
-value = await cached("key", factory, ttl=60)  # cache-aside helper
-```
-
-### Activity backends (`storage/backends/`)
-| Backend | Module | Notes |
-|---|---|---|
-| SQLite (default) | `backends/sqlite.py` | Zero-dep, offline, aiosqlite |
-| PostgreSQL | `backends/postgres.py` | asyncpg connection pool |
-| DuckDB | `backends/duckdb.py` | Analytics-optimised aggregations |
-
-### Vector backends (`storage/vector/`)
-| Backend | Module | Notes |
-|---|---|---|
-| sqlite-vec (default) | `vector/sqlite_vec.py` | Embedded, offline, FTS5 hybrid |
-| Qdrant | `vector/qdrant.py` | Best self-hosted, cosine similarity |
-| Chroma | `vector/chroma.py` | Dev-friendly, local or HTTP client |
-
-### Cache layer (`storage/factory.py`)
-- **Redis**: if `[storage.redis] url` is set; uses SCAN (not KEYS) for prefix deletes
-- **LRU**: in-process, asyncio.Lock-protected, 512 entry cap, TTL per key
-- **Batch ops**: `mget(keys)`, `mset(items)` for pipeline efficiency
-- **Space-scoped invalidation**: `await invalidate_space_cache(space_dir)` clears all keys for a space
-
-### Migration
-```bash
-sarthak storage migrate --from sqlite --to postgres
-sarthak storage status
-sarthak storage benchmark --rows 1000
-```
-
-### Key conventions
-- Never import `storage/backends/*.py` directly — always use `get_activity_repo()`
-- Never import `storage/vector/*.py` directly — always use `await get_embedding_repo(dir)`
-- All cache keys are `space:<posix_path>:<suffix>` — use `space_cache_key(dir, suffix)` helper
-- `EmbeddingRepository.fts_search()` may return `[]` for backends without BM25 — callers must handle gracefully (rag.py already does via RRF fallback)
-
----
-
-## Scripts (`scripts/`)
-
-| Script | Platform | Purpose |
-|---|---|---|
-| `install.sh` | Linux / macOS | Full installer: uv, venv, wizard, config patch, CLI wrapper, systemd/launchd service |
-| `install.ps1` | Windows | Same flow for PowerShell: uv, venv, wizard, config patch, CLI wrapper, Task Scheduler |
-| `uninstall.sh` / `uninstall.ps1` | Both | Remove install dir and service |
-| `status.sh` / `status.ps1` | Both | Run `sarthak status` (finds binary from PATH or `~/.local/bin`) |
-| `build_binary.sh` | Linux / macOS | Nuitka `--onefile` binary → `dist/sarthak` |
-| `build_binary.ps1` | Windows | Same for Windows `.exe` |
-| `install-binary.sh` / `.ps1` | Both | Install a pre-built binary release |
-| `gen_ref_pages.py` | Dev | Generate MkDocs API reference pages |
-| `sync_catalog.py` | Dev | Fetch live model lists from OpenRouter, OpenAI, Ollama, AIMLAPI, GitHub Copilot → `providers.json` |
-
-### `install.sh` / `install.ps1` — three install modes
-
-```bash
-# Dev (local repo)
-LOCAL_INSTALL=1 bash scripts/install.sh
-
-# Specific release
-RELEASE_TAG=v0.1.0 bash scripts/install.sh
-
-# Latest HEAD (default)
-bash scripts/install.sh
-```
-
-Environment variables: `SKIP_WIZARD=true` skips interactive config, `REPO_BRANCH` overrides the branch.
-
-### `sync_catalog.py` — API keys needed
-
-```bash
-OPENROUTER_API_KEY=... OPENAI_API_KEY=... uv run scripts/sync_catalog.py
-```
-
-Reads `providers.json`, merges new models (never deletes existing), writes back. Ollama synced automatically if `localhost:11434` is reachable.
-
-### `rebuild_frontend.sh`
-
-```bash
-bash rebuild_frontend.sh
-```
-
-Runs `npm run build` inside `frontend/`, copies `dist/` → `src/sarthak/web/react_dist/`. **Run this any time you change frontend code** before restarting the server.
-
----
-
-## Frontend (`frontend/`)
-
-React 19 + Vite 7 SPA. Served by the FastAPI backend from `src/sarthak/web/react_dist/`.
-
-### Stack
-
-- React 19, Vite 7, Zustand 5 (state), React Router DOM 7 (hash-based routing)
-- CodeMirror 6 (`@uiw/react-codemirror`) for Markdown editing
-- `react-markdown` + `remark-gfm` + `rehype-highlight` + `rehype-katex` for rendering
-- No TypeScript — plain JSX throughout
-
-### Source layout
-
-```
-frontend/src/
-├── api.js            Thin fetch wrapper: api(path, opts) + fmt/fmtDur/nowTs helpers
-├── App.jsx           Root component: hash-based page routing + popstate sync
-├── store/index.js    Zustand store: theme, navigation, toasts, Spaces state
-├── pages/
-│   ├── Dashboard.jsx Active space hero + spaces grid + AW activity + agents strip
-│   ├── Chat.jsx      SSE streaming chat with session history picker
-│   ├── Spaces.jsx    Full Spaces UI (list → home → chapter → topic views)
-│   ├── SpacePanels.jsx  Slide-in panel host (notes, tasks, SRS, graph, digest…)
-│   ├── Agents.jsx    CRUD for custom agents
-│   └── Config.jsx    config.toml live editor (Ctrl+S to save)
-├── components/
-│   ├── Sidebar.jsx   Navigation sidebar
-│   ├── Toast.jsx     Toast notification stack
-│   ├── Modal.jsx     Reusable modal dialog
-│   ├── Overlay.jsx   Slide-in overlay panel
-│   ├── MarkdownEditor.jsx  CodeMirror edit / rendered read modes with STT and file import
-│   ├── PromptInline.jsx    Inline prompt bar for LLM generation flows
-│   ├── DropdownMenu.jsx    Context menu component
-│   ├── ForceGraph.jsx      D3 force-directed concept graph
-│   └── ConceptGraph.jsx    Wrapper for ForceGraph
-├── sarthak/
-│   ├── ConceptTabs.jsx     ExplainsTab, QuickTestTab, MediaRecorderTab, NotebookTab, PlaygroundTab
-│   └── web/                (generated files — do not edit)
-└── hooks/
-    └── useResizable.js     Drag-to-resize sidebar hook (persists width in localStorage)
-```
-
-### API calls
-
-All API calls go through `api(path, opts)` in `src/api.js`. It prepends `/api` and throws on non-2xx. **Streaming chat** uses `fetch` directly and reads SSE line-by-line. The backend runs on port `4848` in dev; Vite proxies `/api` to it automatically in dev mode.
-
-### State management (Zustand)
-
-All global state lives in `src/store/index.js`. Key slices:
-- `page` + `setPage()` — hash-based navigation with `history.pushState`
-- `isDark` / `toggleTheme()` — persisted to `localStorage`
-- `toasts` / `ok()` / `err()` — toast notifications
-- `currentSpace`, `currentChapter`, `currentTopic`, `spaceRoadmap` — Spaces drill-down state
-
-### Building / developing
-
-```bash
-cd frontend
-npm install
-npm run dev        # dev server (proxies /api to localhost:4848)
-npm run build      # production build → dist/
-npm run lint       # eslint
-
-# From repo root — build + deploy to FastAPI serving dir:
-bash rebuild_frontend.sh
-```
+| File | Superseded by |
+|---|---|
+| `agents/prompts/roadmap.py` | `data/agents/**/*.md` |
+| `agents/_recs_helper.py` | `agents/scheduler._load_roadmap_sync` |
+| `spaces/roadmap_tracker.py` | `spaces/roadmap/db.RoadmapDB` |
+| `orchestrator/orchestrator.py` | `features/ai/agent.ask_orchestrator` (now a 4-line shim) |
+| `features/channels/whatsapp/bot.py` | `neonize_bot.py` |
+| `features/channels/whatsapp/client.py` | `neonize_bot.send_message_standalone` |

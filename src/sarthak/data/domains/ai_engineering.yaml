@@ -1,0 +1,5 @@
+# Domain: AI Engineering
+# Note: This domain shares concept_tree, tools, and projects with data_science.
+# The loader handles this via the 'extends' key below.
+
+extends: data_science

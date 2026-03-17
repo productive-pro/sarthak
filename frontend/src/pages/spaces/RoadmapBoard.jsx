@@ -23,7 +23,6 @@ function RoadmapCard({ chapter: ch, colColor, allChapters, onClick, onRename, on
   const conceptCount = (ch.topics || []).reduce((a, t) => a + (t.concepts || []).length, 0);
   const circ   = 2 * Math.PI * 10;
   const offset = circ - (progress / 100) * circ;
-  const chIdx  = allChapters.findIndex(c => c.id === ch.id);
 
   return (
     <div
@@ -35,7 +34,7 @@ function RoadmapCard({ chapter: ch, colColor, allChapters, onClick, onRename, on
       <div className="roadmap-card-hdr">
         <div style={{ flex:1, minWidth:0 }}>
           <div className="roadmap-card-meta">
-            <span className="roadmap-card-idx">#{chIdx + 1}</span>
+            <span className="roadmap-card-idx">Ch {(ch.order ?? allChapters.findIndex(c => c.id === ch.id)) + 1}</span>
             <DropdownMenu
               trigger={<span style={{ padding:'0 6px', color:'var(--txt3)', fontSize:14 }}>⋮</span>}
               items={[

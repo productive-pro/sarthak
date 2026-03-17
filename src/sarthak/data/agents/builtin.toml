@@ -1,0 +1,60 @@
+# Sarthak — Built-in scheduled agents
+# Each entry maps directly to AgentSpec fields.
+# handler = Python import path of the async handler function.
+# Adding a new built-in: add an [[agent]] block + register its handler function
+# in agents/scheduler.py with @register_handler("agent-id").
+
+[[agent]]
+agent_id        = "sarthak-daily-digest"
+name            = "Daily Digest"
+description     = "Daily learning digest for all active spaces → Telegram."
+prompt          = "Generate and send the daily learning digest for all registered Sarthak spaces."
+schedule        = "0 8 * * *"
+model_tier      = "balanced"
+enable_memory   = true
+notify_telegram = true
+handler         = "sarthak.agents.scheduler:_run_digest_agent"
+
+[[agent]]
+agent_id        = "sarthak-srs-push"
+name            = "SRS Review Push"
+description     = "SRS cards due today → Telegram reminder."
+prompt          = "Check all spaces for spaced repetition cards due today and notify via Telegram."
+schedule        = "0 9 * * *"
+model_tier      = "fast"
+enable_memory   = false
+notify_telegram = true
+handler         = "sarthak.agents.scheduler:_run_srs_push_agent"
+
+[[agent]]
+agent_id        = "sarthak-recommendations"
+name            = "Hourly Recommendations"
+description     = "Hourly next-concept refresh for all active spaces."
+prompt          = "Analyze recent session signals and update recommended next concepts."
+schedule        = "0 * * * *"
+model_tier      = "fast"
+enable_memory   = false
+notify_telegram = false
+handler         = "sarthak.agents.scheduler:_run_recommendations_agent"
+
+[[agent]]
+agent_id        = "sarthak-weekly-digest"
+name            = "Weekly Digest"
+description     = "Sunday 9am: full week-in-review → Telegram."
+prompt          = "Generate and send the weekly learning review for all registered Sarthak spaces."
+schedule        = "0 9 * * 0"
+model_tier      = "powerful"
+enable_memory   = true
+notify_telegram = true
+handler         = "sarthak.agents.scheduler:_run_weekly_digest_agent"
+
+[[agent]]
+agent_id        = "sarthak-workspace-analyse"
+name            = "Workspace Analyser"
+description     = "Every 30min: re-analyse all spaces and update Optimal_Learn.md."
+prompt          = "Analyse all registered spaces and refresh Optimal_Learn.md."
+schedule        = "*/30 * * * *"
+model_tier      = "balanced"
+enable_memory   = false
+notify_telegram = false
+handler         = "sarthak.agents.scheduler:_run_workspace_analyse_agent"

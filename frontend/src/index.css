@@ -2941,6 +2941,57 @@ input, textarea, select { font-family: var(--font); }
 .sg-ring { transform-origin: 64px 64px; animation: sSpin 2.4s linear infinite; }
 .sg-dot  { animation: sOrbit 1.2s ease-in-out infinite; }
 
+/* ── Wizard step dots ────────────────────────────────────────── */
+.wizard-step-dots {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 18px;
+}
+
+/* ── Overview card improvements ─────────────────────────────── */
+.ov-card {
+  animation: ovFadeUp .35s var(--ease, ease) both;
+  position: relative;
+}
+
+/* ── Getting started timeline bullets ───────────────────────── */
+.gs-timeline-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #8b5cf6;
+  background: rgba(139,92,246,.15);
+  border: 1px solid rgba(139,92,246,.3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  font-family: var(--mono);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ── Welcome banner (SpaceHome) ──────────────────────────────── */
+.welcome-banner {
+  animation: ovFadeUp .4s ease both;
+}
+
+/* ── Roadmap generation status badge ────────────────────────── */
+.roadmap-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--txt3);
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--surface2);
+  border: 1px solid var(--brd);
+}
+.roadmap-status-badge--generating { color: var(--accent); border-color: var(--accent-border); background: var(--accent-dim); }
+.roadmap-status-badge--failed     { color: var(--red);    border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.06); }
+.roadmap-status-badge--ready      { color: var(--green);  border-color: rgba(52,211,153,.3);  background: rgba(52,211,153,.06); }
+
 /* ── Settings tabs (SpaceSettingsTabs) ──────────────────────── */
 .settings-tab-bar {
   display: flex;
@@ -3263,3 +3314,80 @@ input, textarea, select { font-family: var(--font); }
 
 /* ── Smooth scrollbar ───────────────────────────────────────── */
 * { scrollbar-width: thin; scrollbar-color: var(--brd2) transparent; }
+
+
+/* ══════════════════════════════════════════════════════════════
+   AG-UI Learner State Bar
+   Live XP / streak / concept / workspace pills shown above
+   the chat composer when mode='agui'.
+   ══════════════════════════════════════════════════════════════ */
+
+.agui-state-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-top: 1px solid var(--brd);
+  background: var(--surface2);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  min-height: 38px;
+}
+
+.agui-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  white-space: nowrap;
+  border: none;
+  cursor: default;
+  line-height: 1.6;
+}
+
+.agui-pill--xp      { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.agui-pill--streak  { background: rgba(251,146,60,.12); color: #fb923c; }
+.agui-pill--level   { background: rgba(139,92,246,.12);  color: #8b5cf6; }
+.agui-pill--concept { background: rgba(34,211,238,.10);  color: #22d3ee; }
+.agui-pill--badge   { background: rgba(234,179,8,.10);   color: #ca8a04; }
+
+/* dir pill is a button */
+.agui-pill--dir {
+  background: var(--surface3, var(--surface2));
+  color: var(--txt2);
+  cursor: pointer;
+  transition: background var(--t-fast, 120ms);
+}
+.agui-pill--dir:hover { background: var(--brd2); }
+
+.agui-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agui-dir-input {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--brd2);
+  background: var(--surface);
+  color: var(--txt1);
+  width: 200px;
+  outline: none;
+}
+.agui-dir-input:focus { border-color: var(--accent); }
+
+.agui-dir-ok {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--accent-border, var(--brd2));
+  background: var(--accent-dim, transparent);
+  color: var(--accent);
+  cursor: pointer;
+}

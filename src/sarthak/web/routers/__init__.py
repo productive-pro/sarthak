@@ -1,4 +1,5 @@
 from sarthak.web.routers.activity import router as activity_router
+from sarthak.web.routers.ag_ui import router as ag_ui_router
 from sarthak.web.routers.agents import router as agents_router
 from sarthak.web.routers.chat import router as chat_router
 from sarthak.web.routers.config import router as config_router
@@ -12,6 +13,7 @@ from sarthak.web.routers.spa import REACT_DIST
 
 __all__ = [
     "activity_router",
+    "ag_ui_router",
     "agents_router",
     "chat_router",
     "config_router",

@@ -1,0 +1,19 @@
+id: query_activity
+description: Fetch activity digest stats (no raw rows)
+module: sarthak.features.ai.tools.activity
+function: tool_query_activity
+---
+id: get_summary
+description: Get AI-generated daily summary
+module: sarthak.features.ai.tools.activity
+function: tool_get_summary
+---
+id: get_tips
+description: Fetch latest saved tips
+module: sarthak.features.ai.tools.activity
+function: tool_get_tips
+---
+id: save_tip
+description: Persist a new tip
+module: sarthak.features.ai.tools.activity
+function: tool_save_tip

@@ -1,0 +1,46 @@
+# Domain: Research & Academia
+
+concept_tree:
+  novice:
+    - "Research methodology: hypothesis formation, study design"
+    - "Literature review: systematic search, citation management"
+    - "Python for research: data collection, cleaning, basic analysis"
+  beginner:
+    - "Statistical inference: hypothesis tests, confidence intervals, effect sizes"
+    - "Reproducible research: version control, environments, notebooks"
+    - "Data visualization for research: publication-quality figures"
+  intermediate:
+    - "Experiment design: power analysis, randomization, blinding"
+    - "Advanced statistics: mixed models, survival analysis, Bayesian methods"
+    - "Automated data pipelines: ingestion, validation, transformation"
+  advanced:
+    - "Meta-analysis: pooling studies, heterogeneity, publication bias"
+    - "ML for research acceleration: automated hypothesis testing, NLP for literature"
+    - "Open science: pre-registration, data sharing, reproducibility standards"
+  expert:
+    - "Research leadership: grant writing, lab infrastructure, mentoring"
+    - "Peer review and publishing: journal selection, response to reviewers"
+
+tools:
+  - name: pandas
+    purpose: "Data manipulation"
+    install_linux: "uv add pandas"
+    category: core
+  - name: scipy
+    purpose: "Scientific computing"
+    install_linux: "uv add scipy"
+    category: core
+  - name: matplotlib
+    purpose: "Visualization"
+    install_linux: "uv add matplotlib"
+    category: core
+  - name: jupyter
+    purpose: "Interactive notebooks"
+    install_linux: "uv add jupyter"
+    category: core
+  - name: dvc
+    purpose: "Data version control"
+    install_linux: "uv add dvc"
+    category: core
+
+projects: []

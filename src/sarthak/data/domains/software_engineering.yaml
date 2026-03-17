@@ -1,0 +1,51 @@
+# Domain: Software Engineering
+
+concept_tree:
+  novice:
+    - "Git fundamentals: commit, branch, merge, rebase"
+    - "Python: functions, modules, packages, virtual environments"
+    - "Testing basics: unit tests with pytest, assert patterns"
+    - "REST APIs: HTTP verbs, status codes, JSON"
+  beginner:
+    - "Design patterns: Factory, Observer, Strategy — when and why"
+    - "SQL: joins, indexes, EXPLAIN query optimization"
+    - "Docker: containers, images, Compose for dev environments"
+    - "CI/CD: GitHub Actions pipeline from push to deploy"
+  intermediate:
+    - "System design: load balancing, caching, message queues"
+    - "Async Python: asyncio, concurrency models, event loops"
+    - "Database internals: B-trees, WAL, MVCC, connection pooling"
+    - "Security: OWASP Top 10, JWT, OAuth2 patterns"
+  advanced:
+    - "Distributed systems: Raft consensus, CAP theorem, eventual consistency"
+    - "Observability: distributed tracing, structured logging, SLOs"
+    - "Performance engineering: profiling, memory, CPython GIL"
+    - "API design: REST vs GraphQL vs gRPC — trade-offs"
+  expert:
+    - "Platform engineering: Kubernetes, service mesh, GitOps"
+    - "Compiler/interpreter internals: parsing, IR, codegen"
+    - "Large-scale refactoring: reading and evolving 100k+ line codebases"
+
+tools:
+  - name: ruff
+    purpose: "Linter + formatter"
+    install_linux: "uv add --dev ruff"
+    category: core
+  - name: pytest
+    purpose: "Testing framework"
+    install_linux: "uv add --dev pytest"
+    category: core
+  - name: httpx
+    purpose: "Modern async HTTP client"
+    install_linux: "uv add httpx"
+    category: core
+  - name: rich
+    purpose: "Beautiful terminal output"
+    install_linux: "uv add rich"
+    category: core
+  - name: typer
+    purpose: "CLI framework"
+    install_linux: "uv add typer"
+    category: core
+
+projects: []

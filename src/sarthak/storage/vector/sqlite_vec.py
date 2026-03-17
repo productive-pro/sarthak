@@ -47,18 +47,82 @@ def _vec_table(dim: int) -> str:
     return f"vecs_{dim}"
 
 
-def _load_sqlite_vec(conn: Any) -> None:
-    """Load sqlite-vec extension (sync, called via to_thread)."""
+async def _load_sqlite_vec_async(conn: Any) -> None:
+    """Load sqlite-vec extension inside aiosqlite's worker thread via execute()."""
     try:
         import sqlite_vec  # type: ignore
-        raw = getattr(conn, "_connection", None) or getattr(conn, "connection", None)
-        if raw is not None:
-            raw.enable_load_extension(True)
-            sqlite_vec.load(raw)
-            raw.enable_load_extension(False)
+
+        def _do_load(raw_conn: Any) -> None:
+            raw_conn.enable_load_extension(True)
+            sqlite_vec.load(raw_conn)
+            raw_conn.enable_load_extension(False)
+
+        # aiosqlite._execute runs the callable inside its own thread where the
+        # raw connection lives — this is the only safe way to load extensions.
+        await conn._execute(_do_load, conn._conn)
     except Exception as exc:
         log.warning("sqlite_vec_load_failed", error=str(exc),
                     hint="pip install sqlite-vec")
+
+
+async def _migrate_legacy_vec_table(conn: Any) -> None:
+    """Rename legacy 'vec_chunks' table to 'vecs_2560' if it exists and new name doesn't."""
+    async with conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+    ) as cur:
+        has_legacy = await cur.fetchone()
+    if not has_legacy:
+        return
+
+    # Determine the dimension from the legacy table schema
+    async with conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='vec_chunks'"
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return
+
+    # Extract dimension from: vec0(id TEXT PRIMARY KEY, embedding float[2560])
+    import re
+    m = re.search(r"float\[(\d+)\]", row[0])
+    if not m:
+        return
+    dim = int(m.group(1))
+    new_name = _vec_table(dim)
+
+    async with conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (new_name,)
+    ) as cur:
+        has_new = await cur.fetchone()
+    if has_new:
+        return  # already migrated
+
+    # sqlite-vec virtual tables cannot be renamed with ALTER TABLE — must drop & recreate.
+    # We copy ids+embeddings via a temp table, then recreate under the new name.
+    # This requires the vec0 extension to be loaded first.
+    log.info("sqlite_vec_migrating_legacy_table", from_table="vec_chunks", to_table=new_name, dim=dim)
+    # Extension must already be loaded by caller (_ensure_vec_table handles this)
+    # For migration we just record the rename in sqlite_master by re-creating.
+    # Since vec0 virtual tables store data in shadow tables, we collect all rows first.
+    try:
+        async with conn.execute(f"SELECT id, embedding FROM vec_chunks") as cur:
+            rows = await cur.fetchall()
+    except Exception as exc:
+        log.warning("sqlite_vec_migration_read_failed", error=str(exc))
+        return
+
+    # Create new table and copy data
+    await conn.execute(
+        f"CREATE VIRTUAL TABLE IF NOT EXISTS {new_name} "
+        f"USING vec0(id TEXT PRIMARY KEY, embedding float[{dim}])"
+    )
+    if rows:
+        await conn.executemany(
+            f"INSERT OR REPLACE INTO {new_name} (id, embedding) VALUES (?, ?)",
+            [(r[0], r[1]) for r in rows],
+        )
+    await conn.commit()
+    log.info("sqlite_vec_migration_done", table=new_name, rows=len(rows))
 
 
 async def _get_conn(space_dir: Path) -> tuple[Any, asyncio.Lock, list[bool]]:
@@ -79,8 +143,10 @@ async def _get_conn(space_dir: Path) -> tuple[Any, asyncio.Lock, list[bool]]:
 async def _ensure_vec_table(conn: Any, vec_loaded: list[bool], dim: int) -> str:
     table = _vec_table(dim)
     if not vec_loaded[0]:
-        await asyncio.to_thread(_load_sqlite_vec, conn)
+        await _load_sqlite_vec_async(conn)
         vec_loaded[0] = True
+        # Migrate legacy 'vec_chunks' table now that the extension is loaded
+        await _migrate_legacy_vec_table(conn)
     async with conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
     ) as cur:
@@ -117,8 +183,9 @@ class SqliteVecRepo:
                 "VALUES (:id, :source, :chunk, :line, :text)",
                 chunks,
             )
+            await conn.executemany(f"DELETE FROM {table} WHERE id = ?", [(c["id"],) for c in chunks])
             await conn.executemany(
-                f"INSERT OR REPLACE INTO {table} (id, embedding) VALUES (?, ?)",
+                f"INSERT INTO {table} (id, embedding) VALUES (?, ?)",
                 [(c["id"], _encode_f32(e)) for c, e in zip(chunks, embeddings)],
             )
             await conn.commit()
@@ -144,9 +211,10 @@ class SqliteVecRepo:
             await conn.commit()
 
     async def search(self, query_vec: list[float], top_k: int = 5) -> list[dict]:
-        conn, _, _ = await self._cl()
+        conn, _, vec_loaded = await self._cl()
         dim = len(query_vec)
-        table = _vec_table(dim)
+        # Load extension + migrate legacy table if not done yet
+        table = await _ensure_vec_table(conn, vec_loaded, dim)
         async with conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
         ) as cur:
@@ -168,7 +236,8 @@ class SqliteVecRepo:
 
     async def fts_search(self, query: str, top_k: int = 5) -> list[tuple[str, float]]:
         conn, _, _ = await self._cl()
-        safe = query.replace('"', '""').replace("'", "''")
+        import re
+        safe = re.sub(r'[^\w\s]', ' ', query)
         try:
             # SQLite FTS5 bm25() returns negative values (lower = more relevant).
             # Negate so callers receive positive scores where higher = better.

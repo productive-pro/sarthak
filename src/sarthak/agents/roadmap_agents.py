@@ -18,9 +18,14 @@ from typing import AsyncIterator
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
-from sarthak.agents.prompts.roadmap import ROADMAP, DIGEST_WARMUP, EXPLAIN, OVERVIEW
 from sarthak.core.logging import get_logger
 from sarthak.features.ai.agents._base import resolve_provider_model, build_pydantic_model
+
+
+def _sys(agent_id: str) -> str:
+    """Load system prompt from data/agents/roadmap/<id>.md (cached)."""
+    from sarthak.data.loader import load_agent
+    return load_agent(agent_id).system_prompt
 
 if False:  # TYPE_CHECKING
     from sarthak.spaces.learner_context import LearnerContext
@@ -37,8 +42,22 @@ def _make_agent(
     provider: str | None = None,
     model: str | None = None,
     retries: int = 2,
+    tier: str = "balanced",
 ) -> Agent:
+    """
+    Build a pydantic-ai Agent with tier-aware model selection.
+    tier: "fast" | "balanced" | "powerful"
+    """
     p, m = resolve_provider_model(provider, model)
+    # Strategy 2: override model with tier-appropriate selection
+    try:
+        from sarthak.core.ai_utils.multi_provider import resolve_model_for_tier
+        from sarthak.core.config import load_config
+        tier_model = resolve_model_for_tier(p, tier, load_config())
+        if tier_model:
+            m = tier_model
+    except Exception:
+        pass
     return Agent(
         build_pydantic_model(p, m),
         output_type=output_type,
@@ -83,7 +102,7 @@ async def generate_roadmap(
         Roadmap, Chapter, Topic, Concept, RoadmapStatus,
     )
 
-    agent = _make_agent(_RoadmapBlueprint, ROADMAP, provider, model, retries=3)
+    agent = _make_agent(_RoadmapBlueprint, _sys("roadmap-generator"), provider, model, retries=3, tier="powerful")
     result = await agent.run(
         f"Domain: {domain}\n"
         f"Learner background: {background or 'general learner'}\n"
@@ -141,7 +160,7 @@ async def generate_space_overview(
     starting_overview, pro_tips. Falls back to empty dict on failure.
     """
     import json
-    agent = _make_agent(str, OVERVIEW, provider, model, retries=2)
+    agent = _make_agent(str, _sys("space-overview"), provider, model, retries=2, tier="balanced")
     try:
         result = await agent.run(
             f"Domain: {domain}\n"
@@ -214,7 +233,7 @@ async def build_digest(space_dir: Path, space_name: str) -> str:
         cn = next_concepts[0]
         # Include learner context so the quicktest is personalised
         lc_prompt = learner_context_for_prompt(lc) if lc else ""
-        agent = _make_agent(str, DIGEST_WARMUP)
+        agent = _make_agent(str, _sys("digest-warmup"), tier="fast")
         result = await agent.run(
             f"Concept: {cn.title}\nDescription: {cn.description}\n\n{lc_prompt}"
         )
@@ -479,7 +498,7 @@ async def stream_explain(
     agent: Agent[None, str] = Agent(
         build_pydantic_model(p, m),
         output_type=str,
-        system_prompt=EXPLAIN,
+        system_prompt=_sys("concept-explainer"),
         retries=2,
     )
     ctx = f"Chapter: {chapter_title}" + (f" › {topic_title}" if topic_title else "") + "\n" if chapter_title else ""

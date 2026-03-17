@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-const NAV_PAGES = new Set(['dashboard', 'chat', 'spaces', 'agents', 'config']);
+const NAV_PAGES = new Set(['dashboard', 'chat', 'agui', 'spaces', 'agents', 'config']);
 
 // ── Settings helpers ───────────────────────────────────────────
 const ACCENT_KEY   = 'ui_accent';
@@ -124,10 +124,14 @@ export const useStore = create((set) => ({
   spaceRoadmap: null,
   spaceSessions: [],
 
+  justCreatedSpace: null,   // name of space just created — cleared after first home view
+
   setSpacesView: (v) => set({ spacesView: v }),
   setCurrentSpace: (s) => set({ currentSpace: s, currentChapter: null, currentTopic: null, spaceRoadmap: null }),
   setCurrentChapter: (c) => set({ currentChapter: c }),
   setCurrentTopic: (t) => set({ currentTopic: t }),
   setSpaceRoadmap: (rm) => set({ spaceRoadmap: rm }),
   setSpaceSessions: (ss) => set({ spaceSessions: ss }),
+  setJustCreatedSpace: (name) => set({ justCreatedSpace: name }),
+  clearJustCreatedSpace: () => set({ justCreatedSpace: null }),
 }));

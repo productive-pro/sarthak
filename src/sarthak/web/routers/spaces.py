@@ -49,12 +49,26 @@ async def list_spaces_api() -> list[dict]:
     spaces = list_spaces()
     for s in spaces:
         s["is_active"] = s.get("directory", "") == active_dir
-        if not s.get("goal") and not s.get("description"):
+        # Enrich from .spaces.json if registry is missing space_type / domain / goal
+        needs_enrich = (
+            not s.get("space_type")
+            or not s.get("domain")
+            or (not s.get("goal") and not s.get("description"))
+        )
+        if needs_enrich:
             try:
                 cfg = load_space(Path(s["directory"]))
                 if cfg:
-                    s["goal"] = cfg.get("goal", "")
-                    s["description"] = cfg.get("description", "")
+                    if not s.get("goal"):
+                        s["goal"] = cfg.get("goal", "")
+                    if not s.get("description"):
+                        s["description"] = cfg.get("description", "")
+                    # Pull space_type / domain from profile blob
+                    profile_blob = cfg.get("__profile__") or {}
+                    if not s.get("space_type"):
+                        s["space_type"] = profile_blob.get("space_type") or ""
+                    if not s.get("domain"):
+                        s["domain"] = profile_blob.get("domain") or ""
             except Exception:
                 pass
     return spaces
@@ -98,12 +112,15 @@ class SpaceInit(BaseModel):
 
 
 async def _post_init(ws, profile, discovered_folders, domain_name=""):
-    """Background: write directory structure doc + generate roadmap."""
-    from sarthak.spaces.roadmap_init import ensure_roadmap, write_directory_structure
-    from sarthak.spaces.workspace_transformer import TEMPLATES
-    default_dirs = list(TEMPLATES.get(profile.space_type, {}).get("directories", []))
-    all_dirs = list(dict.fromkeys(default_dirs + discovered_folders))
-    write_directory_structure(ws, domain_name or profile.domain, all_dirs)
+    """Background: refresh structure doc + generate roadmap."""
+    from sarthak.spaces.roadmap_init import ensure_roadmap
+    from sarthak.spaces.workspace_transformer import WorkspaceTransformer
+    # Re-run transform (idempotent) — refreshes space_structure.md + directory_structure.md
+    await asyncio.to_thread(
+        WorkspaceTransformer(ws).transform,
+        profile.space_type,
+        discovered_folders or None,
+    )
     await ensure_roadmap(ws, profile)
 
 
@@ -216,12 +233,10 @@ async def refine_space_roadmap(body: RoadmapRefineReq) -> dict:
     profile = load_profile(ws)
     if profile is None:
         raise HTTPException(404, "Space not found.")
-
-    async def _run():
-        await refine_roadmap(ws, profile, body.answers)
-
-    asyncio.create_task(_run())
-    return {"ok": True, "scheduled": True, "directory": str(ws)}
+    # Await refinement directly so the frontend receives a completed result,
+    # not a stale pre-refinement overview.
+    success = await refine_roadmap(ws, profile, body.answers)
+    return {"ok": True, "success": success, "directory": str(ws)}
 
 
 # ── Delete / recover ──────────────────────────────────────────────────────────

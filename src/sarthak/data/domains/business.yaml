@@ -1,0 +1,42 @@
+# Domain: Business & Data Analytics
+
+concept_tree:
+  novice:
+    - "Business fundamentals: revenue, cost, profit, unit economics"
+    - "Spreadsheet analysis: Excel/Google Sheets for business data"
+    - "Basic statistics for business: averages, trends, forecasting"
+  beginner:
+    - "Financial statements: P&L, balance sheet, cash flow analysis"
+    - "Market sizing: TAM, SAM, SOM estimation"
+    - "SQL for business analytics: cohort analysis, funnel metrics"
+  intermediate:
+    - "Product analytics: DAU/MAU, retention curves, churn modelling"
+    - "A/B testing: statistical significance, effect size, power analysis"
+    - "Data-driven strategy: metrics trees, OKRs, experimentation culture"
+  advanced:
+    - "Causal inference for business decisions: DiD, regression discontinuity"
+    - "ML for business: customer LTV, demand forecasting, personalisation"
+    - "Building data products: internal dashboards to customer-facing features"
+  expert:
+    - "Executive communication: translating data to board-level decisions"
+    - "Scaling analytics teams: tooling, culture, and measurement systems"
+
+tools:
+  - name: duckdb
+    purpose: "In-process analytical SQL"
+    install_linux: "uv add duckdb"
+    category: core
+  - name: pandas
+    purpose: "Data manipulation"
+    install_linux: "uv add pandas"
+    category: core
+  - name: plotly
+    purpose: "Interactive charts"
+    install_linux: "uv add plotly"
+    category: core
+  - name: streamlit
+    purpose: "Rapid internal dashboards"
+    install_linux: "uv add streamlit"
+    category: core
+
+projects: []

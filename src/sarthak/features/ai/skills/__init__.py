@@ -1,9 +1,12 @@
 """
-Skills registry — Markdown knowledge files the agent can read, write, and delete.
+Skills registry — Markdown knowledge files injected into agent system prompts.
 
-Skills live in  ~/.sarthak_ai/skills/*.md  with optional YAML front-matter.
+Resolution order (first-wins per name):
+  1. Space-scoped  : <space_dir>/.spaces/skills/*.md   (set at runtime via set_space_dir)
+  2. User skills   : <user_data_dir>/skills/*.md
+  3. Built-in      : src/sarthak/data/skills/*.md      (ships with the package)
 
-Front-matter schema:
+Front-matter schema (all fields optional):
     ---
     name: "git-workflow"
     description: "Team branching and commit conventions"
@@ -21,8 +24,35 @@ from sarthak.core.logging import get_logger
 
 log = get_logger(__name__)
 
-SKILLS_DIR = Path.home() / ".sarthak_ai" / "skills"
+# Built-in skills ship with the package (cross-platform, relative to this file)
+_BUILTIN_SKILLS_DIR = Path(__file__).parent.parent.parent.parent / "data" / "skills"
+
+# Resolved from user's platform-appropriate data dir
+_USER_SKILLS_DIR: Path | None = None
+# Optional runtime space-scoped override
+_SPACE_SKILLS_DIR: Path | None = None
+
 _FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+
+
+def _get_user_skills_dir() -> Path:
+    """Return platform-appropriate user skills directory (lazy, cached)."""
+    global _USER_SKILLS_DIR
+    if _USER_SKILLS_DIR is None:
+        from sarthak.core.config import load_config
+        try:
+            cfg = load_config()
+            base = Path(getattr(cfg, "data_dir", Path.home() / ".sarthak_ai"))
+        except Exception:
+            base = Path.home() / ".sarthak_ai"
+        _USER_SKILLS_DIR = base / "skills"
+    return _USER_SKILLS_DIR
+
+
+def set_space_skills_dir(space_dir: str | Path | None) -> None:
+    """Set the active space's skills directory for the current process."""
+    global _SPACE_SKILLS_DIR
+    _SPACE_SKILLS_DIR = Path(space_dir) / ".spaces" / "skills" if space_dir else None
 
 
 @dataclass
@@ -32,21 +62,18 @@ class Skill:
     tags: list[str]
     content: str
     path: Path
+    source: str = "user"   # "builtin" | "user" | "space"
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _ensure_dir() -> None:
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _parse(path: Path) -> Skill | None:
+def _parse(path: Path, source: str = "user") -> Skill | None:
     try:
         raw = path.read_text(encoding="utf-8")
         m = _FM_RE.match(raw)
         if not m:
-            return Skill(name=path.stem, description="", tags=[], content=raw.strip(), path=path)
-
+            return Skill(name=path.stem, description="", tags=[], content=raw.strip(),
+                         path=path, source=source)
         name, description, tags = path.stem, "", []
         for line in m.group(1).splitlines():
             if line.startswith("name:"):
@@ -56,50 +83,76 @@ def _parse(path: Path) -> Skill | None:
             elif line.startswith("tags:"):
                 raw_tags = line.split(":", 1)[1].strip()
                 tags = [t.strip().strip("[]\"'") for t in raw_tags.split(",") if t.strip()]
-
-        return Skill(name=name, description=description, tags=tags, content=raw[m.end():].strip(), path=path)
+        return Skill(name=name, description=description, tags=tags,
+                     content=raw[m.end():].strip(), path=path, source=source)
     except Exception as exc:
         log.warning("skill_parse_failed", path=str(path), error=str(exc))
         return None
 
 
+def _load_dir(d: Path, source: str) -> list[Skill]:
+    if not d or not d.is_dir():
+        return []
+    return [s for p in sorted(d.glob("*.md")) if (s := _parse(p, source))]
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def list_skills() -> list[Skill]:
-    _ensure_dir()
-    return [s for p in sorted(SKILLS_DIR.glob("*.md")) if (s := _parse(p))]
+    """
+    Return merged skill list in resolution order:
+    space-scoped → user → built-in.
+    Names are deduplicated (first-wins).
+    """
+    seen: set[str] = set()
+    result: list[Skill] = []
+    for skills in (
+        _load_dir(_SPACE_SKILLS_DIR, "space"),
+        _load_dir(_get_user_skills_dir(), "user"),
+        _load_dir(_BUILTIN_SKILLS_DIR, "builtin"),
+    ):
+        for s in skills:
+            key = s.name.lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(s)
+    return result
 
 
 def get_skill(name: str) -> Skill | None:
     slug = name.lower().replace(" ", "-")
-    exact = SKILLS_DIR / f"{slug}.md"
-    if exact.exists():
-        return _parse(exact)
-    return next((s for s in list_skills() if slug in s.name.lower() or slug in s.description.lower()), None)
+    return next(
+        (s for s in list_skills()
+         if slug in s.name.lower() or slug in s.description.lower()),
+        None,
+    )
 
 
-def save_skill(name: str, description: str, content: str, tags: list[str] | None = None) -> Skill:
-    _ensure_dir()
+def save_skill(name: str, description: str, content: str,
+               tags: list[str] | None = None, space_dir: str | Path | None = None) -> Skill:
+    """Save to space skills dir if space_dir given, else user skills dir."""
+    if space_dir:
+        target = Path(space_dir) / ".spaces" / "skills"
+    else:
+        target = _get_user_skills_dir()
+    target.mkdir(parents=True, exist_ok=True)
     slug = name.lower().replace(" ", "-")
     tags_str = ", ".join(tags or [])
-    path = SKILLS_DIR / f"{slug}.md"
+    path = target / f"{slug}.md"
     path.write_text(
         f'---\nname: "{name}"\ndescription: "{description}"\ntags: [{tags_str}]\n---\n\n{content}',
         encoding="utf-8",
     )
-    log.info("skill_saved", name=name, path=str(path))
-    return Skill(name=name, description=description, tags=tags or [], content=content, path=path)
+    source = "space" if space_dir else "user"
+    log.info("skill_saved", name=name, source=source)
+    return Skill(name=name, description=description, tags=tags or [],
+                 content=content, path=path, source=source)
 
 
 def delete_skill(name: str) -> bool:
     slug = name.lower().replace(" ", "-")
-    path = SKILLS_DIR / f"{slug}.md"
-    if path.exists():
-        path.unlink()
-        log.info("skill_deleted", name=name)
-        return True
     for s in list_skills():
-        if slug in s.name.lower():
+        if slug in s.name.lower() and s.source != "builtin":
             s.path.unlink()
             log.info("skill_deleted", name=s.name)
             return True
@@ -107,11 +160,9 @@ def delete_skill(name: str) -> bool:
 
 
 def build_context_block(skills: list[Skill], include_content: bool = False) -> str:
-    """Build a skills context block for injection into a system prompt.
-
-    By default (include_content=False) only skill name + description are listed
-    so the system prompt stays small (~1 line per skill).  Full content is only
-    included when a skill is explicitly read via ``read_skill_tool``.
+    """
+    Build skills block for system prompt injection.
+    Summary-only by default (token-efficient); full content only when explicitly requested.
     """
     if not skills:
         return ""
@@ -126,14 +177,14 @@ def build_context_block(skills: list[Skill], include_content: bool = False) -> s
     return "\n".join(lines)
 
 
-# ── Tool wrappers (used by agents) ────────────────────────────────────────────
+# ── Tool wrappers ─────────────────────────────────────────────────────────────
 
 def tool_list_skills() -> str:
     skills = list_skills()
     if not skills:
         return "No skills saved yet."
     return "\n".join(
-        f"**{s.name}** — {s.description}" + (f" [{', '.join(s.tags)}]" if s.tags else "")
+        f"**{s.name}** [{s.source}] — {s.description}" + (f" [{', '.join(s.tags)}]" if s.tags else "")
         for s in skills
     )
 
@@ -142,7 +193,7 @@ def tool_read_skill(name: str) -> str:
     s = get_skill(name)
     if not s:
         return f"Skill '{name}' not found."
-    return f"**{s.name}**\n_{s.description}_\n\n{s.content}"
+    return f"**{s.name}** ({s.source})\n_{s.description}_\n\n{s.content}"
 
 
 def tool_save_skill(name: str, description: str, content: str, tags: str = "") -> str:
@@ -152,4 +203,4 @@ def tool_save_skill(name: str, description: str, content: str, tags: str = "") -
 
 
 def tool_delete_skill(name: str) -> str:
-    return "Skill deleted." if delete_skill(name) else f"Skill '{name}' not found."
+    return "Skill deleted." if delete_skill(name) else f"Skill '{name}' not found or is built-in."

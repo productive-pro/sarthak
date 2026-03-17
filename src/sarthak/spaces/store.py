@@ -225,6 +225,12 @@ def set_active_space(directory: Path) -> dict[str, Any]:
     }
     from sarthak.core.utils import write_atomic
     write_atomic(_ACTIVE_FILE, json.dumps(payload, indent=2))
+    # Invalidate scheduler's active-space cache so next tick sees the new space immediately
+    try:
+        from sarthak.agents.scheduler import invalidate_active_space_cache
+        invalidate_active_space_cache()
+    except Exception:
+        pass
     return ws
 
 
@@ -240,6 +246,12 @@ def get_active_space() -> dict[str, Any] | None:
 def clear_active_space() -> None:
     if _ACTIVE_FILE.exists():
         _ACTIVE_FILE.unlink()
+    # Invalidate scheduler's active-space cache
+    try:
+        from sarthak.agents.scheduler import invalidate_active_space_cache
+        invalidate_active_space_cache()
+    except Exception:
+        pass
 
 
 def remove_space(directory: Path) -> bool:
@@ -289,7 +301,7 @@ def trash_space(directory: Path, name: str) -> dict[str, Any]:
 
     active = get_active_space()
     if active and active.get("directory") == target:
-        clear_active_space()
+        clear_active_space()  # this also invalidates the agent cache
     return {"directory": target, "trashed_path": str(trash_path)}
 
 
@@ -418,12 +430,22 @@ def _register_space(config: dict[str, Any]) -> None:
         directory = str(config.get("directory", ""))
         if not directory:
             return
+        # Extract space_type and domain from the profile blob if present
+        _profile_blob = config.get("__profile__") or {}
+        _space_type = (
+            _profile_blob.get("space_type") or config.get("space_type", "")
+        )
+        _domain = (
+            _profile_blob.get("domain") or config.get("domain", "")
+        )
         payload = {
             "name": config.get("name", ""),
             "directory": directory,
             "description": config.get("description", ""),
             "goal": config.get("goal", ""),
             "tags": config.get("tags", []),
+            "space_type": _space_type,
+            "domain": _domain,
             "updated_at": _now(),
         }
         for e in entries:
@@ -506,6 +528,24 @@ def save_profile(workspace_dir: Path, profile) -> None:  # profile: SpaceProfile
     _register_space(ws)
 
 
+def save_clarification_answers(workspace_dir: Path, answers: str) -> None:
+    """Persist clarification answers in .spaces.json so future roadmap regenerations use them."""
+    ws = load_space(workspace_dir)
+    if ws is None:
+        return
+    ws["clarification_answers"] = answers
+    ws["updated_at"] = _now()
+    save_space(ws, workspace_dir)
+
+
+def load_clarification_answers(workspace_dir: Path) -> str:
+    """Load persisted clarification answers, or empty string if none."""
+    ws = load_space(workspace_dir)
+    if ws is None:
+        return ""
+    return ws.get("clarification_answers", "")
+
+
 def init_space_profile(
     workspace_dir: Path,
     space_type,  # SpaceType
@@ -516,7 +556,7 @@ def init_space_profile(
     recommended_tools: list | None = None,
 ):  # -> SpaceProfile
     """Create a new SpaceProfile from domain defaults, persist it, and init Space Memory files."""
-    from sarthak.spaces.domains import get_domain
+    from sarthak.spaces.domain_loader import get_domain
     from sarthak.spaces.models import LearnerProfile, SpaceProfile
     domain = get_domain(space_type)
     profile = SpaceProfile(

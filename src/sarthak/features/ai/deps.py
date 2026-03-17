@@ -49,6 +49,14 @@ class OrchestratorDeps(BaseModel):
     cwd: str = ""
     allow_web: bool = True
     allow_shell: bool = True
+    question_hint: str = Field(
+        default="",
+        description=(
+            "Raw question text forwarded into tools for hierarchical context decisions. "
+            "spaces_context uses this to decide whether to load HEARTBEAT "
+            "(only when question mentions srs/streak/cards/review)."
+        ),
+    )
 
 
 # ── Result schemas ────────────────────────────────────────────────────────────

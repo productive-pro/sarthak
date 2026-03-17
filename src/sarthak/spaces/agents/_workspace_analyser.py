@@ -40,39 +40,11 @@ class WorkspaceAnalyserAgent:
     - Workspace signals (tools, files) are kept but are no longer the whole story.
     """
 
-    SYSTEM = """You are the Sarthak learning intelligence layer.
-Given comprehensive data about a learner's workspace AND their actual learning signals,
-write a concise Optimal_Learn.md that the orchestrator will read at session start.
-
-This file has ONE purpose: give the orchestrator everything it needs to run
-the best possible session for THIS learner TODAY.
-
-Write tight, specific, evidence-based prose. No vague advice. No generic tips.
-Reference actual concept names, actual test scores, actual workspace files.
-
-Output ONLY Markdown, no JSON, no preamble:
-
-# Optimal_Learn
-
-## Workspace State
-(2-3 sentences: what exists, what's recent, what's missing from the workspace)
-
-## Learner Signals
-(What the data actually shows: strong concepts, weak areas, test trend, SRS due.
-Be specific — name concepts and scores.)
-
-## Recommendations (with reasons)
-(Numbered list. Each item: concept name → why now based on evidence.
-e.g. "1. **Linear Regression** — 3 failed quicktests, no notes written yet")
-
-## Session Focus
-(Single clearest recommendation for TODAY's session, 1-2 sentences max)
-
-## Environment
-(Detected tools, configs, installed packages — comma-separated)
-
-## Orchestrator Notes
-(Anything unusual: new workspace, first session, big gap since last session, etc.)"""
+    @property
+    def SYSTEM(self) -> str:  # noqa: N802
+        """Loaded from data/agents/spaces/workspace-analyser.md at first access."""
+        from sarthak.spaces.agents._common import _load_system
+        return _load_system("workspace-analyser")
 
     # ── Workspace snapshot ─────────────────────────────────────────────────────
 
@@ -136,7 +108,7 @@ e.g. "1. **Linear Regression** — 3 failed quicktests, no notes written yet")
     def _build_recommendation_block(self, ctx: SpaceContext) -> str:
         """
         Build a data-driven recommendation block using recommend_with_reasons().
-        Falls back gracefully if roadmap is unavailable.
+        Called via asyncio.to_thread() so a fresh event loop is always safe here.
         """
         try:
             from sarthak.spaces.roadmap.db import RoadmapDB
@@ -148,16 +120,8 @@ e.g. "1. **Linear Regression** — 3 failed quicktests, no notes written yet")
                 await db.init()
                 return await db.load_roadmap()
 
-            try:
-                # If called from a sync context with no running loop, asyncio.run works.
-                # If already inside a running loop (e.g. called via asyncio.to_thread),
-                # we are in a worker thread so asyncio.run is safe there too.
-                roadmap = asyncio.run(_load())
-            except RuntimeError:
-                # Last resort: nest via a new event loop in this thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    roadmap = pool.submit(asyncio.run, _load()).result()
+            # We are always called from asyncio.to_thread(), so asyncio.run() is safe.
+            roadmap = asyncio.run(_load())
 
             if not roadmap:
                 return ""
@@ -262,7 +226,7 @@ e.g. "1. **Linear Regression** — 3 failed quicktests, no notes written yet")
             prompt += f"\n## Top Session Optimization\n{top_opt}\n"
 
         try:
-            return await run_llm(self.SYSTEM, prompt)
+            return await run_llm(self.SYSTEM, prompt, tier="balanced")
         except Exception as exc:
             log.warning("workspace_analyser_failed", error=str(exc))
             return self._fallback(ctx, snapshot, rec_block, top_opt)
