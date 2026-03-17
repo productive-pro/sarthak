@@ -1,8 +1,6 @@
 # Agents
 
-Agents are automations that run on a schedule. You describe what you want in plain language and Sarthak sets up the rest — timing, tools, and delivery. Results can be sent to you on Telegram.
-
-Everything described here is available in the web UI under **Agents**. The [Web UI guide](web.md) has a full walkthrough of the interface.
+Agents are automations that run on a schedule. You describe what you want in plain language and Sarthak handles the rest — timing, tools, and delivery. Results can be sent to Telegram so you get updates on your phone without opening the app.
 
 ---
 
@@ -10,7 +8,7 @@ Everything described here is available in the web UI under **Agents**. The [Web 
 
 An agent can do anything Sarthak can do, on a schedule:
 
-- Summarise your learning progress across Spaces
+- Summarise your learning progress across all Spaces
 - Review your weakest concepts and prepare a study plan
 - Fetch news or research on a topic you are studying
 - Monitor something in your workspace and notify you when it changes
@@ -20,89 +18,149 @@ An agent can do anything Sarthak can do, on a schedule:
 
 ## Creating an agent
 
-Go to **Agents** and click **+ New Agent**. Write a plain-language description of what you want. A few examples:
+### Web UI
 
-- "Every morning at 8am, send me a summary of what I should study today"
-- "Every Sunday, send a weekly review of my progress across all Spaces"
-- "Whenever I finish a session, remind me of the three weakest concepts from today"
+Go to **Agents** in the sidebar → click **+ New Agent**. Write a plain-language description of what you want:
 
-Tick **Send results to Telegram** if you want the output delivered to your phone.
+- `"Every morning at 8am, send me a summary of what I should study today"`
+- `"Every Sunday, send a weekly review of my progress across all Spaces"`
+- `"Check for new papers on transformers and summarise them on Fridays"`
 
-Sarthak reads your description, decides on a schedule and the right tools, and saves the agent. You can see and run it immediately from the Agents page.
+Tick **Send results to Telegram** to get output on your phone. Click **Save** — the agent appears in your list and starts running on schedule.
 
-Under the hood, each saved agent becomes an `AgentSpec` with:
+### CLI
 
-- a cron schedule
-- a prompt
-- a tool list such as `web_search`, `shell`, `file_read`, `file_write`, or `http_fetch`
-- an optional sandbox policy with per-run limits
+```bash
+# Global system agent
+sarthak agents create "Every morning, send me a digest of what I should study" --telegram
 
-The scheduler checks due agents every 60 seconds and starts runs in the background.
+# Space-scoped agent (has access to that Space's roadmap and notes)
+sarthak agents create --space --dir ~/ml-project "Daily summary of my notes and weak concepts"
+```
+
+---
+
+## Agent types
+
+**Global agents** (`--system`, the default) can span multiple Spaces. They live in `~/.sarthak_ai/agents/`.
+
+**Space-scoped agents** (`--space --dir <path>`) have access to a specific Space's roadmap, learner profile, and notes. They live in `<space_dir>/.spaces/agents/`. Create them from the Space home → **Agents** panel.
 
 ---
 
 ## Built-in agents
 
-Sarthak includes five built-in agents that are registered automatically:
+Sarthak includes five built-in agents registered automatically at startup:
 
-| Agent | When | What it does |
-|:---|:---|:---|
-| Daily Digest | Every morning | Sends a summary of your active Spaces, streak, and suggested focus for the day |
-| SRS Review Push | Every morning | Lists the concepts due for spaced repetition review today |
-| Recommendations | Every hour | Updates the suggestions for what to study next based on your recent sessions |
-| Weekly Digest | Every Sunday | A full week-in-review: focus time, concepts touched, test scores, and recommendations |
-| Workspace Analyser | Every 30 minutes | Re-checks Spaces, refreshes `Optimal_Learn.md`, and updates lightweight recommendations when the workspace changed |
+| Agent | Schedule | What it does |
+|---|---|---|
+| **Daily Digest** | Every morning (8am) | Sends a summary of your active Spaces, streak, and suggested focus for the day |
+| **SRS Review Push** | Every morning (9am) | Lists every concept due for spaced repetition review today |
+| **Recommendations** | Every hour | Updates the suggestions for what to study next based on your recent sessions |
+| **Weekly Digest** | Every Sunday (9am) | A full week-in-review: focus time, concepts touched, test scores, recommendations |
+| **Workspace Analyser** | Every 30 minutes | Re-checks Spaces, refreshes `Optimal_Learn.md`, and updates lightweight recommendations when files changed |
 
-These can be paused but not deleted.
+Built-in agents can be paused but not deleted.
 
 ---
 
-## Space-scoped agents
+## Managing agents
 
-Agents can be created inside a specific Space. Space-scoped agents have access to that Space's roadmap, learner profile, and notes as context. Open a Space → click the **Agents** panel button in the top-right toolbar to manage agents for that Space.
+### Web UI
 
-Space-scoped agent specs are stored under `<space_dir>/.spaces/agents/` rather than the global `~/.sarthak_ai/agents/`.
+Each agent card shows its name, schedule, and status. You can:
 
-Global agents live under `~/.sarthak_ai/agents/` and can span multiple Spaces.
+- **Pause / Enable** — stop or resume the schedule at any time
+- **Run** — trigger the agent right now and see the output immediately
+- **Logs** — review the last 10 runs with timestamps and success/failure status
+- **Delete** — remove the agent permanently
+
+### CLI
+
+```bash
+sarthak agents list                        # all agents
+sarthak agents list --system               # global agents only
+sarthak agents list --space                # all space agents
+sarthak agents list --dir ~/ml-project    # space agents for one directory
+
+sarthak agents run <agent-id>              # run immediately, ignore schedule
+sarthak agents logs <agent-id>             # show recent run history
+sarthak agents logs <agent-id> --limit 10  # last 10 runs
+
+sarthak agents enable <agent-id>
+sarthak agents disable <agent-id>
+sarthak agents delete <agent-id>
+sarthak agents delete <agent-id> --force   # skip confirmation
+```
 
 ---
 
 ## Sandbox and safety
 
-Every agent run is wrapped by the sandbox layer before the LLM executes it.
+Every agent run is wrapped in the sandbox before the LLM executes it:
 
-- Shell access is disabled unless the agent was created with the `shell` tool
-- File access is limited to allowed read and write roots
-- Output is scrubbed for secrets before it is stored or sent
-- Run time, memory, CPU, and web-call counts are capped
+- **Shell** — disabled unless the agent was explicitly created with shell access
+- **File access** — limited to allowed read/write roots
+- **Secrets** — the agent prompt is scrubbed for secrets before the LLM sees them; output is scrubbed before storage or delivery
+- **Time limit** — system agents default to 120s, space agents to 300s
+- **Output cap** — 64 KB per run
+- **Web calls** — capped at 10 per run by default
 
-The default limits come from the agent scope and can be overridden in `config.toml` under `agents.sandbox.system` and `agents.sandbox.space`, or per agent through its saved sandbox policy.
+Tune these limits in `config.toml`:
 
-Typical defaults:
+```toml
+[agents.sandbox.system]
+wall_timeout  = 120
+output_cap    = 65536
+max_web_calls = 10
 
-- system agents: 120 second wall timeout
-- space agents: 300 second wall timeout
-- output cap: 64 KB
-- max web calls: 10 per run
-
----
-
-## Telegram notifications
-
-Agents can deliver results to Telegram so you get updates on your phone without opening the app.
-
-To set it up: go to **Config** in the sidebar, find the Telegram section, and add your bot token and chat ID. Enable Telegram there and it will be available as a delivery option when creating agents.
-
-If you need to create a Telegram bot, search for **@BotFather** on Telegram and follow the instructions — it takes about two minutes.
+[agents.sandbox.space]
+wall_timeout  = 300
+output_cap    = 65536
+max_web_calls = 10
+```
 
 ---
 
-## Where agent data is stored
+## Telegram setup
+
+To receive agent results on your phone:
+
+1. Search **@BotFather** on Telegram → `/newbot` → copy the token
+2. Get your chat ID from **@userinfobot** on Telegram
+3. Go to **Config** in the web UI → Telegram section → add token and chat ID → enable
+
+Or edit `~/.sarthak_ai/config.toml`:
+
+```toml
+[telegram]
+enabled         = true
+bot_token       = "ENC:..."       # sarthak encrypt "1234:AAF..."
+allowed_user_id = 123456789
+```
+
+Once enabled, any new agent can be created with `--telegram` to deliver results to your phone.
+
+---
+
+## How agents are stored
 
 | Path | Contents |
-|:---|:---|
-| `~/.sarthak_ai/agents/<agent_id>/spec.json` | Global agent definition |
-| `~/.sarthak_ai/agents/<agent_id>/runs/` | Global run history |
+|---|---|
 | `~/.sarthak_ai/agents/registry.json` | Global agent registry |
-| `<space_dir>/.spaces/agents/<agent_id>/spec.json` | Space-scoped agent definition |
-| `<space_dir>/.spaces/agents/<agent_id>/runs/` | Space-scoped run history |
+| `~/.sarthak_ai/agents/<id>/spec.json` | Global agent definition |
+| `~/.sarthak_ai/agents/<id>/runs/` | Global run history |
+| `<space_dir>/.spaces/agents/<id>/spec.json` | Space-scoped agent definition |
+| `<space_dir>/.spaces/agents/<id>/runs/` | Space-scoped run history |
+
+---
+
+## Under the hood
+
+When you type a plain-language description, Sarthak's `creator.py` sends it to your configured LLM and extracts:
+
+- **Schedule** — parsed into a cron expression
+- **Tool list** — from `web_search`, `shell`, `file_read`, `file_write`, `http_fetch`
+- **Sandbox policy** — resource limits for this specific agent
+
+The agent spec is saved as JSON. The scheduler (`scheduler.py`) ticks every 60 seconds, finds agents whose cron schedule is due, and fires them as async tasks. Each run calls the LLM, captures output, scrubs secrets, and saves the `AgentRun` record.

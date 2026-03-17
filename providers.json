@@ -505,6 +505,31 @@
           "tier": "paid"
         },
         {
+          "capabilities": [],
+          "context_window": 400000,
+          "endpoints": [
+            "/v1/responses"
+          ],
+          "features": [
+            "openai/response-api"
+          ],
+          "id": "openai/gpt-5-3-codex",
+          "info": {
+            "contextLength": 400000,
+            "description": "",
+            "developer": "Open AI",
+            "docs_url": "https://docs.aimlapi.com/api-references/text-models-llm/openai/gpt-5.3-codex",
+            "maxTokens": 128000,
+            "name": "GPT-5.3 Codex",
+            "url": ""
+          },
+          "name": "GPT-5.3 Codex",
+          "notes": "Open AI",
+          "speed": "medium",
+          "tier": "paid",
+          "type": "responses"
+        },
+        {
           "capabilities": [
             "text"
           ],
@@ -616,32 +641,9 @@
             "tools"
           ],
           "context_window": 128000,
-          "id": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-          "name": "Meta Llama 3.1 8B Instruct Turbo",
-          "notes": "Meta",
-          "speed": "medium",
-          "tier": "paid"
-        },
-        {
-          "capabilities": [
-            "text",
-            "tools"
-          ],
-          "context_window": 128000,
           "id": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
           "name": "Meta Llama 3.1 70B Instruct Turbo",
           "notes": "Meta",
-          "speed": "medium",
-          "tier": "paid"
-        },
-        {
-          "capabilities": [
-            "text"
-          ],
-          "context_window": 32000,
-          "id": "mistralai/Mistral-7B-Instruct-v0.2",
-          "name": "Mistral 7B Instruct v0.2",
-          "notes": "Mistral AI",
           "speed": "medium",
           "tier": "paid"
         },
@@ -3218,6 +3220,27 @@
           "type": "image"
         },
         {
+          "capabilities": [],
+          "context_window": 0,
+          "endpoints": [
+            "v1/images/generations"
+          ],
+          "features": [],
+          "id": "bytedance/seedream-5-0-lite-preview",
+          "info": {
+            "description": "",
+            "developer": "ByteDance",
+            "docs_url": "https://docs.aimlapi.com/api-references/image-models/bytedance/seedream-5-0-lite-preview",
+            "name": "Seedream 5.0 Lite Preview",
+            "url": ""
+          },
+          "name": "Seedream 5.0 Lite Preview",
+          "notes": "ByteDance",
+          "speed": "medium",
+          "tier": "paid",
+          "type": "image"
+        },
+        {
           "capabilities": [
             "text"
           ],
@@ -3534,6 +3557,48 @@
             "url": ""
           },
           "name": "Grok 2 Image",
+          "notes": "X AI",
+          "speed": "medium",
+          "tier": "paid",
+          "type": "image"
+        },
+        {
+          "capabilities": [],
+          "context_window": 0,
+          "endpoints": [
+            "/v1/images/generations"
+          ],
+          "features": [],
+          "id": "x-ai/grok-imagine-image",
+          "info": {
+            "description": "Grok Imagine Image is a lightweight text-to-image model by xAI optimized for fast and cost-efficient image generation.",
+            "developer": "X AI",
+            "docs_url": "",
+            "name": "Grok Imagine Image",
+            "url": ""
+          },
+          "name": "Grok Imagine Image",
+          "notes": "X AI",
+          "speed": "medium",
+          "tier": "paid",
+          "type": "image"
+        },
+        {
+          "capabilities": [],
+          "context_window": 0,
+          "endpoints": [
+            "/v1/images/generations"
+          ],
+          "features": [],
+          "id": "x-ai/grok-imagine-image-pro",
+          "info": {
+            "description": "Grok Imagine Image Pro is an advanced text-to-image model by xAI designed for high-quality image generation with improved detail and prompt fidelity.",
+            "developer": "X AI",
+            "docs_url": "",
+            "name": "Grok Imagine Image Pro",
+            "url": ""
+          },
+          "name": "Grok Imagine Image Pro",
           "notes": "X AI",
           "speed": "medium",
           "tier": "paid",
@@ -8933,6 +8998,29 @@
           "speed": "medium",
           "tier": "paid",
           "type": "audio"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 128000,
+          "id": "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+          "name": "Meta Llama 3.1 8B Instruct Turbo",
+          "notes": "Meta",
+          "speed": "medium",
+          "tier": "paid"
+        },
+        {
+          "capabilities": [
+            "text"
+          ],
+          "context_window": 32000,
+          "id": "mistralai/Mistral-7B-Instruct-v0.2",
+          "name": "Mistral 7B Instruct v0.2",
+          "notes": "Mistral AI",
+          "speed": "medium",
+          "tier": "paid"
         }
       ],
       "models_dynamic": true
@@ -9051,6 +9139,403 @@
       ],
       "models_dynamic": false
     },
+    "github-copilot": {
+      "api_key_default": null,
+      "base_url": "https://api.githubcopilot.com",
+      "env_key": "GITHUB_COPILOT_TOKEN",
+      "kind": "openai-compat",
+      "label": "GitHub Copilot",
+      "models": [
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 264000,
+          "id": "gpt-5-mini",
+          "name": "GPT-5 mini",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4o-mini-2024-07-18",
+          "name": "GPT-4o mini",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4o-2024-11-20",
+          "name": "GPT-4o",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4o-2024-08-06",
+          "name": "GPT-4o",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 128000,
+          "id": "grok-code-fast-1",
+          "name": "Grok Code Fast 1",
+          "notes": "xAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 264000,
+          "id": "gpt-5.1",
+          "name": "GPT-5.1",
+          "notes": "OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 400000,
+          "id": "gpt-5.1-codex",
+          "name": "GPT-5.1-Codex",
+          "notes": "OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 400000,
+          "id": "gpt-5.1-codex-max",
+          "name": "GPT-5.1-Codex-Max",
+          "notes": "OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text"
+          ],
+          "context_window": 0,
+          "id": "text-embedding-3-small",
+          "name": "Embedding V3 small",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text"
+          ],
+          "context_window": 0,
+          "id": "text-embedding-3-small-inference",
+          "name": "Embedding V3 small (Inference)",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 216000,
+          "id": "claude-sonnet-4",
+          "name": "Claude Sonnet 4",
+          "notes": "Anthropic",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 200000,
+          "id": "claude-sonnet-4.5",
+          "name": "Claude Sonnet 4.5",
+          "speed": "medium",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 200000,
+          "id": "claude-opus-4.5",
+          "name": "Claude Opus 4.5",
+          "speed": "slow",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 200000,
+          "id": "claude-haiku-4.5",
+          "name": "Claude Haiku 4.5",
+          "speed": "fast",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 1000000,
+          "id": "gemini-2.5-pro",
+          "name": "Gemini 2.5 Pro",
+          "speed": "medium",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4.1-2025-04-14",
+          "name": "GPT-4.1",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 264000,
+          "id": "gpt-5.2",
+          "name": "GPT-5.2",
+          "notes": "OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 16384,
+          "id": "gpt-3.5-turbo-0613",
+          "name": "GPT 3.5 Turbo",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 32768,
+          "id": "gpt-4",
+          "name": "GPT 4",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 32768,
+          "id": "gpt-4-0613",
+          "name": "GPT 4",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4o-2024-05-13",
+          "name": "GPT-4o",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4-o-preview",
+          "name": "GPT-4o",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4.1",
+          "name": "GPT-4.1",
+          "speed": "medium",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 16384,
+          "id": "gpt-3.5-turbo",
+          "name": "GPT 3.5 Turbo",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4o-mini",
+          "name": "GPT-4o Mini",
+          "speed": "fast",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 32768,
+          "id": "gpt-4",
+          "name": "GPT 4",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4o",
+          "name": "GPT-4o",
+          "speed": "medium",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 128000,
+          "id": "gpt-4-o-preview",
+          "name": "GPT-4o",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text"
+          ],
+          "context_window": 0,
+          "id": "text-embedding-ada-002",
+          "name": "Embedding V2 Ada",
+          "notes": "Azure OpenAI",
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "reasoning"
+          ],
+          "context_window": 128000,
+          "id": "o3-mini",
+          "name": "o3 Mini",
+          "speed": "medium",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 200000,
+          "id": "claude-opus-4.6",
+          "name": "Claude Opus 4.6",
+          "speed": "slow",
+          "tier": "copilot"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools",
+            "vision"
+          ],
+          "context_window": 1000000,
+          "id": "gemini-2.5-flash",
+          "name": "Gemini 2.5 Flash",
+          "speed": "fast",
+          "tier": "copilot"
+        }
+      ],
+      "models_dynamic": false
+    },
     "groq": {
       "api_key_default": null,
       "base_url": "https://api.groq.com/openai/v1",
@@ -9102,6 +9587,133 @@
       "kind": "ollama",
       "label": "Ollama",
       "models": [
+        {
+          "capabilities": [
+            "embedding"
+          ],
+          "context_window": 2048,
+          "details": {
+            "families": [
+              "gemma3"
+            ],
+            "family": "gemma3",
+            "format": "gguf",
+            "parameter_size": "307.58M",
+            "parent_model": "",
+            "quantization_level": "BF16"
+          },
+          "digest": "85462619ee721b466c5927d109d4cb765861907d5417b9109caebc4e614679f1",
+          "embedding_length": 768,
+          "id": "embeddinggemma:300m",
+          "name": "embeddinggemma:300m",
+          "notes": "",
+          "ollama_show": {
+            "capabilities": [
+              "embedding"
+            ],
+            "license": [
+              "Gemma Terms of Use",
+              "Last modified: March 24, 2025",
+              "..."
+            ],
+            "model": {
+              "architecture": "gemma3",
+              "context_length": "2048",
+              "embedding_length": "768",
+              "parameters": "307.58M",
+              "quantization": "BF16"
+            },
+            "parameters": {
+              "num_batch": "2048",
+              "num_ctx": "2048"
+            }
+          },
+          "size": 621875917,
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "embedding"
+          ],
+          "context_window": 32768,
+          "details": {
+            "families": [
+              "qwen3"
+            ],
+            "family": "qwen3",
+            "format": "gguf",
+            "parameter_size": "595.78M",
+            "parent_model": "",
+            "quantization_level": "Q8_0"
+          },
+          "digest": "ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d",
+          "embedding_length": 1024,
+          "id": "qwen3-embedding:0.6b",
+          "name": "qwen3-embedding:0.6b",
+          "notes": "",
+          "ollama_show": {
+            "capabilities": [
+              "embedding"
+            ],
+            "license": [],
+            "model": {
+              "architecture": "qwen3",
+              "context_length": "32768",
+              "embedding_length": "1024",
+              "parameters": "595.78M",
+              "quantization": "Q8_0"
+            },
+            "parameters": {}
+          },
+          "size": 639150858,
+          "speed": "unknown",
+          "tier": "free"
+        },
+        {
+          "capabilities": [
+            "text",
+            "tools"
+          ],
+          "context_window": 131072,
+          "details": {
+            "families": [
+              "granite"
+            ],
+            "family": "granite",
+            "format": "gguf",
+            "parameter_size": "8.2B",
+            "parent_model": "",
+            "quantization_level": "Q4_K_M"
+          },
+          "digest": "fd429f23b90980ed1bef53b990894e7b0199331f6ae90c5650240a7d5b70f1f7",
+          "embedding_length": 4096,
+          "id": "granite3.3:latest",
+          "name": "granite3.3:latest",
+          "notes": "",
+          "ollama_show": {
+            "capabilities": [
+              "completion",
+              "tools"
+            ],
+            "license": [
+              "Apache License",
+              "Version 2.0, January 2004",
+              "..."
+            ],
+            "model": {
+              "architecture": "granite",
+              "context_length": "131072",
+              "embedding_length": "4096",
+              "parameters": "8.2B",
+              "quantization": "Q4_K_M"
+            },
+            "parameters": {}
+          },
+          "size": 4942891653,
+          "speed": "unknown",
+          "tier": "free"
+        },
         {
           "capabilities": [
             "embedding"
@@ -9347,26 +9959,6 @@
       "label": "OpenRouter",
       "models": [],
       "models_dynamic": true
-    },
-    "github-copilot": {
-      "api_key_default": null,
-      "base_url": "https://api.githubcopilot.com",
-      "env_key": "GITHUB_COPILOT_TOKEN",
-      "kind": "openai-compat",
-      "label": "GitHub Copilot",
-      "models_dynamic": false,
-      "models": [
-        {"id": "gpt-4o",              "name": "GPT-4o",              "capabilities": ["text", "tools", "vision"], "context_window": 128000, "tier": "copilot", "speed": "medium"},
-        {"id": "gpt-4o-mini",         "name": "GPT-4o Mini",         "capabilities": ["text", "tools"],          "context_window": 128000, "tier": "copilot", "speed": "fast"},
-        {"id": "gpt-4.1",             "name": "GPT-4.1",             "capabilities": ["text", "tools", "vision"], "context_window": 128000, "tier": "copilot", "speed": "medium"},
-        {"id": "o3-mini",             "name": "o3 Mini",             "capabilities": ["text", "reasoning"],      "context_window": 128000, "tier": "copilot", "speed": "medium"},
-        {"id": "claude-haiku-4.5",    "name": "Claude Haiku 4.5",    "capabilities": ["text", "tools"],          "context_window": 200000, "tier": "copilot", "speed": "fast"},
-        {"id": "claude-sonnet-4.5",   "name": "Claude Sonnet 4.5",   "capabilities": ["text", "tools", "vision"], "context_window": 200000, "tier": "copilot", "speed": "medium"},
-        {"id": "claude-opus-4.5",     "name": "Claude Opus 4.5",     "capabilities": ["text", "tools", "vision"], "context_window": 200000, "tier": "copilot", "speed": "slow"},
-        {"id": "claude-opus-4.6",     "name": "Claude Opus 4.6",     "capabilities": ["text", "tools", "vision"], "context_window": 200000, "tier": "copilot", "speed": "slow"},
-        {"id": "gemini-2.5-pro",      "name": "Gemini 2.5 Pro",      "capabilities": ["text", "tools", "vision"], "context_window": 1000000, "tier": "copilot", "speed": "medium"},
-        {"id": "gemini-2.5-flash",    "name": "Gemini 2.5 Flash",    "capabilities": ["text", "tools", "vision"], "context_window": 1000000, "tier": "copilot", "speed": "fast"}
-      ]
     },
     "xai": {
       "api_key_default": null,

@@ -1,5 +1,5 @@
 site_name: Sarthak AI
-site_description: Privacy-first activity intelligence and mastery engine for any skill
+site_description: Privacy-first AI learning companion — local, offline-capable, built for any domain
 site_url: https://productive-pro.github.io/sarthak/
 repo_url: https://github.com/productive-pro/sarthak
 repo_name: productive-pro/sarthak
@@ -7,17 +7,24 @@ edit_uri: edit/main/docs/
 
 nav:
   - Home: index.md
-  - Guides:
+  - Getting Started:
       - Installation: guides/installation.md
       - Configuration: guides/configuration.md
-      - Publishing to PyPI: guides/publishing.md
-      - Docs Development: guides/development.md
   - Features:
+      - Spaces (Learning Engine): features/spaces.md
+      - Agents (Automation): features/agents.md
       - Web UI: features/web.md
-      - Sarthak Spaces: features/spaces.md
-      - Agents: features/agents.md
-      - TUI and Analytics: features/tui.md
+      - Terminal UI: features/tui.md
       - MCP Server: features/mcp.md
+  - Reference:
+      - CLI Reference: reference/cli.md
+      - Overview: reference/index.md
+      - AI Agent API: reference/sarthak.features.ai.agent.md
+      - Config API: reference/sarthak.core.config.md
+      - MCP API: reference/sarthak.features.mcp.server.md
+      - TUI API: reference/sarthak.features.tui.app.md
+      - Web API: reference/sarthak.web.app.md
+      - CLI API: reference/sarthak.cli.main.md
   - Architecture:
       - Overview: architecture/overview.md
       - Privacy and Security: architecture/privacy.md
@@ -26,15 +33,8 @@ nav:
       - Release Notes: release-notes.md
       - Changelog: changelog.md
       - Contributing: contributing.md
-      - Not Found (404): 404.md
-  - Reference:
-      - Overview: reference/index.md
-      - CLI: reference/sarthak.cli.main.md
-      - Config: reference/sarthak.core.config.md
-      - MCP: reference/sarthak.features.mcp.server.md
-      - TUI: reference/sarthak.features.tui.app.md
-      - AI Agent: reference/sarthak.features.ai.agent.md
-      - Web: reference/sarthak.web.app.md
+      - Publishing to PyPI: guides/publishing.md
+      - Docs Development: guides/development.md
 
 theme:
   name: material

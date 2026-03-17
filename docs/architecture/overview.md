@@ -1,181 +1,192 @@
 # System Architecture
 
-Sarthak is composed of two independent subsystems — the Spaces mastery engine and the custom agent engine — that share the same orchestration layer, AI provider abstraction, and storage primitives.
+Sarthak is composed of two independent subsystems — the **Spaces mastery engine** and the **custom agent engine** — that share the same orchestration layer, AI provider abstraction, and storage primitives.
 
-## High-level layout
+---
+
+## Package layout
 
 ```
 src/sarthak/
-  cli/                # Click entrypoint — spaces_cli, agents_cli, analytics_cli
-  orchestrator/       # Service runner — starts all daemons
+  cli/              # Click CLI — spaces_cli, agents_cli, analytics_cli, copilot_cli
+  orchestrator/     # Service runner — starts web server + agent scheduler
   features/
-    ai/               # Pydantic AI orchestrator, specialist tools, LLM provider resolution
-    capture/          # Window, terminal, snapshot daemons
-    mcp/              # MCP server (stdio transport)
-    tui/              # Textual dashboard
-    channels/         # Telegram and other notification channels
-  core/               # Config loader, logging (structlog), encryption utilities
-  storage/            # Repository pattern: SQLite / Postgres / DuckDB + vector backends
-  spaces/             # Mastery engine — see Spaces section
-  agents/             # Scheduler, runner, creator, store, models
-  analytics/          # Focus, resume, debug, weekly, trends reports
-  web/                # React 19 + FastAPI web UI (served from web/react_dist/)
+    ai/             # Pydantic AI orchestrator, specialist tools, LLM provider resolution
+    mcp/            # MCP server (stdio transport)
+    tui/            # Textual terminal dashboard
+    channels/       # Telegram and WhatsApp bots, channel dispatch
+  core/             # Config loader, logging (structlog), encryption utilities, AI utilities
+  storage/          # Repository pattern: SQLite / Postgres / DuckDB + vector backends
+  spaces/           # Mastery engine — SpacesOrchestrator, sub-agents, SRS, RAG, roadmap
+  agents/           # Custom agent engine — scheduler, runner, creator, store, models
+  analytics/        # Focus, resume, weekly, trends reports
+  web/              # React 19 + FastAPI web UI (served from web/react_dist/)
 ```
 
-## Single-orchestrator rule
+---
 
-All channels (Telegram, TUI, Web) route through `features/channels/` → `orchestrator/orchestrator.py` → `features/ai/agent.py`. No channel does its own routing.
+## Request flow (any channel → LLM → response)
 
-All scheduled automation runs through `agents/scheduler.py`, started as the `agent_scheduler` service.
-
-## Storage
-
-All activity data lives in SQLite at `~/.sarthak_ai/sarthak.db` by default (via the repository pattern in `storage/`). Alternative backends — PostgreSQL, DuckDB, and LibSQL — are also available through `config.toml`.
-
-Spaces data lives inside each workspace under `.spaces/`:
-
-| Path | Contents |
-|:---|:---|
-| `.spaces/sarthak.db` | AI roadmap — chapters, topics, concepts, file index |
-| `.spaces/rag/` | Default local RAG storage area, including `sarthak.vec` for sqlite-vec |
-| `.spaces/roadmap.json` | Session history, XP, streak (last 200 sessions) |
-| `.spaces/Optimal_Learn.md` | Workspace analysis written after each session |
-| `.spaces/sessions/` | `SpaceSession` JSON records (one per tracked session) |
-| `.spaces/agents/` | Space-scoped agent specs and run history |
-| `.spaces/SOUL.md` | Agent identity for this domain (set once at init) |
-| `.spaces/USER.md` | Live learner state snapshot (updated every `save_profile`) |
-| `.spaces/HEARTBEAT.md` | SRS due + daily checks (updated hourly) |
-| `.spaces/MEMORY.md` | Long-term learner patterns (LLM distill, updated weekly) |
-| `.spaces/memory/YYYY-MM-DD.md` | Raw daily session logs |
-
-Global state:
-
-| Path | Contents |
-|:---|:---|
-| `~/.sarthak_ai/sarthak.db` | Activity events (SQLite) |
-| `~/.sarthak_ai/spaces.json` | Global spaces registry |
-| `~/.sarthak_ai/active_space.json` | Active space pointer |
-| `~/.sarthak_ai/agents/` | Global agent specs and run history |
-
-## Universal storage layer
-
-Business logic never imports DB drivers directly. Everything goes through the repository pattern in `storage/`:
-
-```python
-from sarthak.storage.factory import get_activity_repo, get_embedding_repo, get_cache
-
-repo  = get_activity_repo()            # process singleton, thread-safe
-erepo = await get_embedding_repo(dir)  # per-space singleton, async-safe
-cache = get_cache()                    # Redis or LRU, transparent fallback
+```
+User input (Web / TUI / Telegram / WhatsApp / MCP)
+  │
+  ├── Web (POST /api/chat)
+  │     web/services/chat.py::stream_chat_sse()
+  │       → load_history_messages(sid)       [SQLite, capped at 40]
+  │       → _compact_history() if >32 msgs   [fast model summary]
+  │       → agent.run_stream()               [intent-classified tool groups]
+  │           ↳ SSE: tool_start/tool_done events + text chunks
+  │       → save_chat_turn(sid, q, reply)
+  │
+  ├── TUI / Telegram / WhatsApp
+  │     features/channels/__init__.py::stream_dispatch()
+  │       → load_history_messages(sid)
+  │       → features/ai/agent.py::stream_orchestrator()
+  │           → _classify_intent(question)   [keyword scan, <1ms]
+  │           → _compact_history()           [if history > 32 messages]
+  │           → get_agent("orchestrator", groups=…)  [cached per provider+model+groups]
+  │           → agent.run() / run_stream()   [pydantic-ai tool loop]
+  │       → save_chat_turn(sid, q, reply)
+  │
+  └── MCP   features/mcp/server.py → dispatch()
 ```
 
-**Activity backends** (`storage/backends/`): SQLite (default), PostgreSQL, DuckDB, LibSQL.
+**Critical rule:** All channels call `ask_orchestrator()` or `stream_orchestrator()` from `features/ai/agent.py`. No channel does its own routing.
 
-**Vector backends** (`storage/vector/`): sqlite-vec (default, embedded offline), Qdrant, Chroma, pgvector, LanceDB, Weaviate.
+---
 
-Backend is set in `config.toml → [storage]`. Migrate between backends with `sarthak storage migrate`.
+## Context budget management
 
-## ActivityWatch integration
+| Constant | Value | Meaning |
+|---|---|---|
+| `_MAX_HISTORY` | 40 | Hard cap: keep last 20 Q/A pairs |
+| `_COMPACT_THRESHOLD` | 32 | Compact when history exceeds this |
 
-ActivityWatch is the sole source of app-time data. The bridge in `spaces/activity_bridge.py` translates AW bucket events into `ActivityContext` objects. This context is a low-weight supplementary signal in curriculum planning. High-quality signals come from self-reports and practice test results.
+**Intent classification** (`_classify_intent`) — keyword scan in under 1ms → returns a `frozenset[str]` of tool groups. Fewer groups = smaller system prompt = more room for history.
+
+Tool groups: `spaces`, `activity`, `system`, `shell`, `rag`, `workspace`, `skills`, `web`.
+
+**History compaction** — when `len(history) > 32`: summarise the old half via a fast model (max 200 words), replace with a synthetic `[Conversation summary]` message, keep recent messages intact. Never mutates the input list.
+
+---
 
 ## Spaces architecture
 
 ### SpacesOrchestrator
 
-`spaces/orchestrator.py` — stateless per call. All state lives in `SpaceProfile` on disk. Agents are instantiated once at construction; all are stateless.
+`spaces/orchestrator.py` — stateless per call. All state lives in `SpaceProfile` on disk. Sub-agents are instantiated once; all are stateless.
 
 ```
 SpacesOrchestrator
-  ├── EnvironmentAgent        scan real OS PATH + importlib; no guessing
-  ├── OnboardingAgent         detect background; set is_technical; infer goal
+  ├── EnvironmentAgent        scan real OS PATH; no guessing
+  ├── OnboardingAgent         detect background; is_technical flag; infer goal
   ├── CurriculumAgent         ZPD-based concept selection
   ├── MathAgent               math at right depth + NumPy equivalent
   ├── TaskBuilderAgent        hands-on task with real-world hook
   ├── ProjectAgent            scaffold end-to-end projects with ROADMAP.md
-  ├── EngagementAgent         render content as Markdown for learner background
+  ├── EngagementAgent         render content for learner background
   ├── AssessmentAgent         evaluate submissions; detect novel approaches
   ├── WorkspaceAgent          reshape directory to expert structure (non-destructive)
   ├── SpacedRepetitionAgent   SM-2 scheduling (pure Python, no LLM)
   ├── BadgeAgent              achievement system (pure Python, no LLM)
   ├── WorkspaceAnalyserAgent  sample workspace; write Optimal_Learn.md
   ├── ExternalToolsAgent      detect VS Code, Colab, Obsidian from filesystem
-  ├── PracticeEngine          generate and grade timed tests (LLM / RAG / prompt)
+  ├── PracticeEngine          generate and grade timed tests (LLM / RAG / custom prompt)
   └── SignalOptimizer         analyze session signals; produce recommendations
 ```
 
-### Space memory files
+### Learning pipeline
 
-Each Space has a set of persistent Markdown files read and written by agents. They form a running context block that the orchestrator injects at the start of every session.
+```
+build_learner_context(space_dir, profile)
+  → ingest notes, media notes, activity store, test results, sessions, RAG index
+  → ConceptEvidence per concept (mastery_confidence = 40%test + 30%understand + 20%notes + 10%qt)
+  → LearnerContext { strong, weak, in_progress, srs_due_by_evidence, … }
+        ↓
+recommend_with_reasons(roadmap, mastered, struggling, review_due)
+  → Score: struggle(100) > review(80) > prereq_ready(60) > in_progress(40)
+           > tag_overlap(10×) > order_decay(-1×)
+  → writes recommendations.md every 30min (no LLM)
+        ↓
+sync_from_digest(db_path, DigestSignals)
+  → SM-2 upsert per concept based on evidence grade
+  → stuck→grade0, test_failed→1, weak→1, no_note→2, strong→4
+        ↓
+get_due(db_path) → cards due today, ordered by urgency
+```
 
-| File | Updated by | Purpose |
-|:---|:---|:---|
-| `SOUL.md` | Set once at init | Agent identity and domain framing |
-| `USER.md` | Every `save_profile()` | Live learner state snapshot |
-| `HEARTBEAT.md` | Hourly (`sarthak-memory-sync`) | SRS due counts + daily check |
-| `MEMORY.md` | Weekly (LLM distill, Sundays) | Long-term learner patterns |
-| `memory/YYYY-MM-DD.md` | Every session end | Raw session logs |
-
-Read path: `read_context_block_async(space_dir)` — cached in Redis/LRU for 120 s, invalidated on every write.
-
-### Session tracker
-
-`spaces/session_tracker.py` — records `SpaceSession` objects: active seconds, idle seconds, files edited, lines written, git commits, composite depth score. Saved to `.spaces/sessions/` after `end_session`.
-
-### Signal optimizer
-
-`spaces/optimizer.py` — `SignalOptimizer` reads recent `SpaceSession` records plus `LearnerContext` (self-reports, test results, SRS history) and produces ranked `SessionOptimization` objects. Called after every session and on demand via `sarthak spaces optimize`.
-
-### Practice engine
-
-`spaces/practice.py` — `PracticeEngine` generates `PracticeTest` objects and grades `TestResult` objects. Questions are sourced from the LLM, workspace RAG index, or a custom prompt.
-
-### RAG system
-
-`spaces/rag.py` — vector index over workspace files via the configured vector backend (sqlite-vec by default). Supports incremental indexing (mtime-based), full re-index, hybrid BM25+vector search, status, and watchdog-based auto-reindex. Injected into agents via `orch.get_rag_tool()`.
-
-### Roadmap database
-
-`spaces/roadmap/db.py` — `RoadmapDB` stores the AI-generated curriculum as a SQLite schema: chapters, topics, concepts, workspace files. Regenerate with `sarthak spaces roadmap --regen`.
+---
 
 ## Agent engine
 
-`agents/` — custom scheduled automation.
-
 | File | Responsibility |
-|:---|:---|
-| `scheduler.py` | Cron tick; runs built-in agents such as digest, SRS push, recommendations, and workspace analysis |
-| `runner.py` | Execute agent spec; inject context; sandbox enforcement |
-| `creator.py` | AI-powered agent creation from natural-language description |
-| `store.py` | Agent spec + run history persistence |
-| `models.py` | `AgentSpec`, `AgentRun`, `AgentScope`, `AgentTool`, `SandboxPolicy` |
-| `roadmap_agents.py` | `generate_roadmap`, `build_digest`, `stream_explain` |
+|---|---|
+| `agents/scheduler.py` | Cron tick every 60s; fires built-in agents as async tasks |
+| `agents/runner.py` | Execute agent spec; inject context; sandbox enforcement |
+| `agents/creator.py` | AI-powered agent creation from natural-language description |
+| `agents/store.py` | Agent spec + run history persistence (JSON) |
+| `agents/models.py` | `AgentSpec`, `AgentRun`, `AgentScope`, `AgentTool`, `SandboxPolicy` |
+| `agents/roadmap_agents.py` | `generate_roadmap`, `build_digest`, `stream_explain` |
 
-Agents can be global (`~/.sarthak_ai/agents/`) or space-scoped (`.spaces/agents/`). Each agent has a cron schedule, a tool list (`web_search`, `shell`, `file_read`, `file_write`, `http_fetch`), and an optional `SandboxPolicy` with per-run resource limits.
+Every run passes through `agents/sandbox/`, which enforces: tool gating, path guards, time and memory limits, secret scrubbing, and output truncation.
 
-Every run passes through `agents/sandbox/`, which enforces tool gating, path guards, time and memory limits, secret scrubbing, and output truncation before results are stored or delivered.
+---
 
 ## AI layer
 
-All agents use Pydantic AI with a 3-tier `FallbackModel` chain built from `config.toml`. Provider configuration lives in `core/ai_utils/`. If the primary model fails, Sarthak retries with fallback1, then fallback2 — agents never crash on transient provider errors.
+All agents use Pydantic AI with a 3-tier `FallbackModel` chain built from `config.toml → [ai.fallback]`. If the primary model fails, Sarthak retries with fallback1, then fallback2 — agents never crash on transient provider errors.
 
-## Data flow (activity intelligence)
+Provider configuration lives in `core/ai_utils/multi_provider.py`. Adding a new provider requires one builder function and one entry in `_BUILDERS`.
 
-```
-ActivityWatch (app focus events)
-  └── activity_bridge.py
-        └── ActivityContext
-              └── CurriculumAgent / SummaryAgent / SignalOptimizer
+---
+
+## Storage
+
+All activity data lives in SQLite at `~/.sarthak_ai/sarthak.db` by default. Alternative backends are available via `config.toml → [storage]`.
+
+Business logic never imports DB drivers directly — everything goes through the repository pattern in `storage/`:
+
+```python
+from sarthak.storage.factory import get_activity_repo, get_embedding_repo
+
+repo  = get_activity_repo()            # process singleton, thread-safe
+erepo = await get_embedding_repo(dir)  # per-space singleton, async-safe
 ```
 
-```
-Capture daemon (window, terminal, snapshot)
-  └── storage/write.py → ~/.sarthak_ai/sarthak.db
-        └── analytics/ → TUI / Web UI / MCP
-```
+**Activity backends:** SQLite (default), PostgreSQL, DuckDB, LibSQL  
+**Vector backends:** sqlite-vec (default, embedded), Qdrant, Chroma, pgvector, LanceDB, Weaviate
+
+---
+
+## Key data locations
+
+| Path | Contents |
+|---|---|
+| `~/.sarthak_ai/sarthak.db` | Activity events (SQLite) |
+| `~/.sarthak_ai/agents/` | Global agent specs and run history |
+| `~/.sarthak_ai/spaces.json` | Global spaces registry |
+| `<space_dir>/.spaces/sarthak.db` | AI roadmap — chapters, topics, concepts |
+| `<space_dir>/.spaces/rag/` | Vector index |
+| `<space_dir>/.spaces/roadmap.json` | Session history, XP, streak |
+| `<space_dir>/.spaces/sessions/` | `SpaceSession` JSON records |
+| `<space_dir>/.spaces/agents/` | Space-scoped agent specs and runs |
+| `<space_dir>/.spaces/{SOUL,USER,HEARTBEAT,MEMORY}.md` | Space memory files |
+| `<space_dir>/.spaces/memory/YYYY-MM-DD.md` | Daily session logs |
+| `<space_dir>/.spaces/Optimal_Learn.md` | Workspace analysis |
+
+---
 
 ## Extension points
 
-- Add a new orchestrator tool in `features/ai/tools/`, then register it in `features/ai/agents/orchestrator.py`
-- Add a new custom agent capability by extending `AgentTool`, `agents/runner.py`, and `agents/sandbox/config.py`
-- Add a new built-in system agent in `agents/scheduler.py` and keep its handler narrow
+**New orchestrator tool:**
+1. Implement in `features/ai/tools/`, register with `@agent.tool` in `features/ai/agents/orchestrator.py`
+2. Add keywords to `_KW` in `_classify_intent()` so the tool is included only when needed
+
+**New built-in system agent:**
+1. Add entry to `_BUILTIN_AGENTS` in `agents/scheduler.py`
+2. Add handler `_run_<n>_agent(spec)` and register in `_HANDLERS`
+
+**New custom agent capability:**
+1. Add enum to `AgentTool` in `agents/models.py`
+2. Add `_make_<tool>_tool()` in `agents/runner.py`
+3. Add `allow_*` field to `SandboxConfig` in `agents/sandbox/config.py`

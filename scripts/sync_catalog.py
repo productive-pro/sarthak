@@ -10,7 +10,7 @@ import json
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CATALOG = ROOT / "providers.json"
+CATALOG = ROOT / "src/sarthak/data/providers.json"
 
 
 def _capabilities_from_openrouter(model: dict) -> list[str]:
